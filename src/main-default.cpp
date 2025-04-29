@@ -1,442 +1,677 @@
 #include <Arduino.h>
-#include <DallasTemperature.h>
-#include <OneWire.h>
+#include <WiFi.h>
+#include <WebServer.h>
 #include <SD.h>
 #include <SPI.h>
 #include <TFT_eSPI.h>
-#include <TouchDrvCSTXXX.hpp>
-#include <Wire.h>
-#include <algorithm>
-#include <semphr.h>
+#include <BLEDevice.h>
+#include <BLEServer.h>
+#include <BLEUtils.h>
+#include <BLE2902.h>
+#include <vector>
+#include "freertos/FreeRTOS.h"
+#include "freertos/queue.h"
+#include <time.h>
+#include <WebSocketsServer.h>  // For WebSocket server
 
-// ----- Pin Definitions -----
-#define DS18B20_PIN          (2U)
-#define SD_CS                (10U)
-#define BOARD_I2C_SDA        (18U)
-#define BOARD_I2C_SCL        (17U)
-#define BOARD_TOUCH_IRQ      (16U)
-#define BOARD_TOUCH_RST      (21U)
-#ifndef CST816_SLAVE_ADDRESS
-  #define CST816_SLAVE_ADDRESS (0x15)
-#endif
 
-// ----- Sensor Configuration -----
-#define MAX_SENSORS       (5U)
-#define MAX_STORED_POINTS (100U)
+// ─── CONFIG ───────────────────────────────────────────────────────────────────
+// Wi-Fi credentials
+const char* ssid     = "Mihaita";
+const char* password = "ciolan229";
 
-DeviceAddress sensorAddresses[MAX_SENSORS];
-unsigned int sensorCount = 0;
-float tempHistories[MAX_SENSORS][MAX_STORED_POINTS] = {0};
-unsigned int currentIndex = 0;
-uint16_t sensorColors[MAX_SENSORS] = {TFT_GREEN, TFT_RED, TFT_CYAN, TFT_YELLOW, TFT_ORANGE};
+// SD card CS pin
+const int SD_CS = 10;
 
-// ----- Global Objects -----
-TFT_eSPI tft = TFT_eSPI();
-TouchDrvCSTXXX touch;
-int16_t ts_x[5], ts_y[5];
-OneWire oneWire(DS18B20_PIN);
-DallasTemperature sensors(&oneWire);
+// Filenames
+const char* foodDBFileName = "/food_db.csv";
+const char* logFileName    = "/food_log.csv";
 
-// ----- SD Logging Globals -----
-String logFileName = "/File 0.csv";
-String logBuffer = "";
-bool sdAvailable = false;
-TickType_t lastSdCheckTick = 0;
-const TickType_t sdCheckIntervalTicks = pdMS_TO_TICKS(10000);
+// Simulated weight in **grams**
+float weight = 1000.0;  // 1000 g = 1 kg
 
-// ----- Home Button & Zoom Globals -----
-// Before auto mode starts, the home button triggers auto mode start.
-// After auto mode is running, subsequent touches toggle zoom mode.
-volatile bool startAuto = false;
-volatile bool zoomMode = false;
-volatile bool autoStarted = false;
+// BLE NUS UUIDs
+#define NUS_SERVICE_UUID        "6E400001-B5A3-F393-E0A9-E50E24DCCA9E"
+#define NUS_CHAR_UUID_RX        "6E400002-B5A3-F393-E0A9-E50E24DCCA9E"
+#define NUS_CHAR_UUID_TX        "6E400003-B5A3-F393-E0A9-E50E24DCCA9E"
 
-// ------------------- Function Prototypes -------------------
-void homeButtonCallback(void* user_data);
-void MainTask(void* params);
-void TouchTask(void* params);
-void initSensors();
-void initScreen();
-void waitForHomeButtonTouch();
+// ─── DATA STRUCTURES ───────────────────────────────────────────────────────────
+struct FoodItem {
+  String name;
+  float calories, protein, carbs, fat;
+  int   addedOrder;  // Order of addition
+  int   usageCount;  // How many times logged
+};
 
-void checkSdConnection();
-void writeLogBuffer();
-void readAllTemperatures(float* temps);
-void logTemperatureData(float* temps);
-void autoModeLoop();
+struct DailyNutrition {
+  float calories, protein, carbs, fat;
+};
 
-// ------------------- Home Button Callback -------------------
-void homeButtonCallback(void* user_data)
-{
-    if (!autoStarted)
-    {
-        Serial.println("Home button callback: Starting Auto Mode");
-        startAuto = true;
+// In-memory DB + state
+std::vector<FoodItem> foodDatabase;
+DailyNutrition       dailyTotals       = {0,0,0,0};
+FoodItem*            currentFood       = nullptr;
+bool                 needDisplayUpdate = true;
+bool                 timeSynced        = false;
+
+// BLE command packet
+struct BLECommand {
+  uint8_t  data[64];
+  uint8_t  len;
+};
+static QueueHandle_t bleQueue = nullptr;
+
+// ─── HARDWARE OBJECTS ─────────────────────────────────────────────────────────
+TFT_eSPI            tft;
+WebSocketsServer webSocket = WebSocketsServer(81); // WebSocket server on port 81
+WebServer           server(80);
+BLECharacteristic*  pTxCharacteristic;
+BLECharacteristic*  pRxCharacteristic;
+
+// ─── PROTOTYPES ────────────────────────────────────────────────────────────────
+void loadFoodDatabase();
+void resetDailyTotals();
+String processSelection(const String& foodName);
+void handleRoot();
+void handleSelect();
+void logMeasurement();
+void updateDisplay();
+void analyzeFoodLog();
+void BLEProcessTask(void*);
+
+// ─── BLE CALLBACKS ─────────────────────────────────────────────────────────────
+class ServerCallbacks : public BLEServerCallbacks {
+  void onDisconnect(BLEServer* srv) override {
+    Serial.println("🔌 BLE client disconnected, restarting advertising");
+    srv->startAdvertising();
+  }
+};
+
+class RxCallbacks : public BLECharacteristicCallbacks {
+  void onWrite(BLECharacteristic* chr) override {
+    BLECommand cmd;
+    size_t len = chr->getLength();
+    if (len > sizeof(cmd.data)) len = sizeof(cmd.data);
+    memcpy(cmd.data, chr->getData(), len);
+    cmd.len = len;
+    BaseType_t woken = pdFALSE;
+    xQueueSendFromISR(bleQueue, &cmd, &woken);
+    if (woken) portYIELD_FROM_ISR();
+  }
+};
+
+// ─── SETUP ────────────────────────────────────────────────────────────────────
+void setup() {
+  Serial.begin(115200);
+  delay(200);
+
+  // — SD CARD —
+  if (!SD.begin(SD_CS)) {
+    Serial.println("❌ SD init failed");
+  } else {
+    Serial.println("✅ SD initialized");
+    loadFoodDatabase();
+    analyzeFoodLog();
+    if (!SD.exists(logFileName)) {
+      File f = SD.open(logFileName, FILE_WRITE);
+      if (f) {
+        f.println("DateTime,Weight(g),Food,Calories,Protein,Carbs,Fat");
+        f.close();
+      }
     }
-    else
-    {
-        static TickType_t lastToggle = 0;
-        TickType_t now = xTaskGetTickCount();
-        // Reduced debounce delay to 150 ms.
-        if (now - lastToggle >= pdMS_TO_TICKS(150))
-        {
-            zoomMode = !zoomMode;
-            Serial.println("Home button callback: Zoom mode toggled -> " + String(zoomMode ? "ON" : "OFF"));
-            lastToggle = now;
-        }
+  }
+
+  // — TFT DISPLAY —
+  tft.begin();
+  tft.setRotation(1);
+  tft.fillScreen(TFT_BLACK);
+  tft.setTextColor(TFT_GREEN, TFT_BLACK);
+  tft.setTextSize(2);
+  tft.println("Smart Kitchen Scale");
+
+  // — WIFI —
+  WiFi.mode(WIFI_STA);
+  WiFi.begin(ssid, password);
+  Serial.print("Connecting to Wi-Fi");
+  unsigned long start = millis();
+  while (WiFi.status() != WL_CONNECTED && millis() - start < 5000) {
+    delay(500);
+    Serial.print(".");
+  }
+  Serial.println();
+
+  if (WiFi.status() == WL_CONNECTED) {
+    Serial.print("✅ Wi-Fi IP = ");
+    Serial.println(WiFi.localIP());
+
+    configTzTime("CET-1CEST,M3.5.0/2,M10.5.0/3", "pool.ntp.org");
+    Serial.println("🔄 NTP time sync requested...");
+  } else {
+    Serial.println("⚠️ Wi-Fi timeout, offline mode");
+  }
+
+  // — BLE NUS setup —
+  BLEDevice::init("KitchenScaleBLE");
+  BLEServer* pServer = BLEDevice::createServer();
+  pServer->setCallbacks(new ServerCallbacks());
+  BLEService* nus = pServer->createService(NUS_SERVICE_UUID);
+
+  pRxCharacteristic = nus->createCharacteristic(
+    NUS_CHAR_UUID_RX,
+    BLECharacteristic::PROPERTY_WRITE |
+    BLECharacteristic::PROPERTY_WRITE_NR
+  );
+  pRxCharacteristic->setCallbacks(new RxCallbacks());
+
+  pTxCharacteristic = nus->createCharacteristic(
+    NUS_CHAR_UUID_TX,
+    BLECharacteristic::PROPERTY_NOTIFY
+  );
+  pTxCharacteristic->addDescriptor(new BLE2902());
+
+  nus->start();
+  pServer->getAdvertising()->start();
+  Serial.println("🔵 BLE advertising ‘KitchenScaleBLE’");
+
+  webSocket.begin();
+webSocket.onEvent([](uint8_t num, WStype_t type, uint8_t * payload, size_t length) {
+  if (type == WStype_CONNECTED) {
+    Serial.printf("[WebSocket] Client %u Connected\n", num);
+  } else if (type == WStype_DISCONNECTED) {
+    Serial.printf("[WebSocket] Client %u Disconnected\n", num);
+  }
+});
+Serial.println("🌐 WebSocket server started");
+
+
+  // — HTTP server routes —
+  server.on("/",       HTTP_GET, handleRoot);
+  server.on("/reset", HTTP_GET, []() {
+    resetDailyTotals();
+    server.send(200, "text/plain", "✅ Totals Reset");
+  });  
+  server.on("/addfood", HTTP_GET, []() {
+    if (!server.hasArg("name") || !server.hasArg("calories") ||
+        !server.hasArg("protein") || !server.hasArg("carbs") || !server.hasArg("fat")) {
+      server.send(400, "text/plain", "Missing parameters");
+      return;
     }
-}
-
-// ------------------- TouchTask -------------------
-// This task polls the touchscreen every 5 ms.
-void TouchTask(void* params)
-{
-    const int homeX = 85;
-    const int homeY = 360;
-    const int tol = 20;  // Tolerance in pixels
-    const TickType_t debounceDelay = pdMS_TO_TICKS(150);
-    TickType_t lastTouchTime = 0;
-
-    while (true)
-    {
-        uint8_t pts = touch.getPoint(ts_x, ts_y, touch.getSupportTouchPoint());
-        if (pts > 0)
-        {
-            for (int i = 0; i < pts; i++)
-            {
-                int dx = ts_x[i] - homeX;
-                int dy = ts_y[i] - homeY;
-                if (abs(dx) < tol && abs(dy) < tol)
-                {
-                    TickType_t now = xTaskGetTickCount();
-                    if (now - lastTouchTime >= debounceDelay)
-                    {
-                        Serial.print("TouchTask: Detected valid touch at (");
-                        Serial.print(ts_x[i]);
-                        Serial.print(", ");
-                        Serial.print(ts_y[i]);
-                        Serial.println(")");
-                        // Call the callback directly.
-                        if (!autoStarted)
-                        {
-                            Serial.println("TouchTask: Starting Auto Mode");
-                            startAuto = true;
-                        }
-                        else
-                        {
-                            zoomMode = !zoomMode;
-                            Serial.println("TouchTask: Zoom mode toggled -> " + String(zoomMode ? "ON" : "OFF"));
-                        }
-                        lastTouchTime = now;
-                    }
-                    break;
-                }
-            }
-        }
-        vTaskDelay(pdMS_TO_TICKS(5));
-    }
-}
-
-// ------------------- MainTask -------------------
-void MainTask(void* params)
-{
-    TickType_t lastWakeTime = xTaskGetTickCount();
-    const TickType_t loopPeriod = pdMS_TO_TICKS(50);
-    while (true)
-    {
-        // Poll touch events (not strictly needed if TouchTask runs, but can help).
-        touch.getPoint(ts_x, ts_y, touch.getSupportTouchPoint());
-        checkSdConnection();
-        autoModeLoop();
-        writeLogBuffer();
-        vTaskDelayUntil(&lastWakeTime, loopPeriod);
-    }
-}
-
-// ------------------- SD & Logging Functions -------------------
-void writeLogBuffer()
-{
-    if (!sdAvailable || logBuffer.length() == 0)
+    server.on("/deletefood", HTTP_GET, []() {
+      if (!server.hasArg("name")) {
+        server.send(400, "text/plain", "Missing food name");
         return;
-    File logFile = SD.open(logFileName, FILE_APPEND);
-    if (logFile)
-    {
-        logFile.print(logBuffer);
-        logFile.close();
-        logBuffer.clear();
-    }
-    else
-    {
-        sdAvailable = false;
-    }
-}
-
-void checkSdConnection()
-{
-    TickType_t now = xTaskGetTickCount();
-    if (!sdAvailable && (now - lastSdCheckTick >= sdCheckIntervalTicks))
-    {
-        if (SD.begin(SD_CS))
-        {
-            uint8_t logFileCount = 0;
-            while (SD.exists(logFileName))
-            {
-                logFileCount++;
-                logFileName = "/File " + String(logFileCount) + ".csv";
-            }
-            File file = SD.open(logFileName, FILE_WRITE);
-            if (file)
-            {
-                String header = String(millis());
-                for (int i = 0; i < sensorCount; i++)
-                {
-                    header += ",";
-                    for (int j = 0; j < 8; j++)
-                    {
-                        header += String(sensorAddresses[i][j], HEX);
-                    }
-                }
-                file.println(header);
-                file.close();
-                sdAvailable = true;
-            }
+      }
+      String target = server.arg("name");
+      std::vector<FoodItem> newDB;
+      for (auto& item : foodDatabase) {
+        if (!item.name.equalsIgnoreCase(target)) {
+          newDB.push_back(item);
         }
-        lastSdCheckTick = now;
+      }
+      if (newDB.size() == foodDatabase.size()) {
+        server.send(404, "text/plain", "Food not found");
+        return;
+      }
+      // Overwrite food_db.csv
+      File f = SD.open(foodDBFileName, FILE_WRITE);
+      if (!f) {
+        server.send(500, "text/plain", "Failed to update food database");
+        return;
+      }
+      f.println("Name,Calories,Protein,Carbs,Fat");
+      for (auto& item : newDB) {
+        f.println(item.name + "," +
+                  String(item.calories, 2) + "," +
+                  String(item.protein, 2) + "," +
+                  String(item.carbs, 2) + "," +
+                  String(item.fat, 2));
+      }
+      f.close();
+      foodDatabase = newDB;
+      server.send(200, "text/plain", "✅ Food deleted");
+    });
+    
+  
+    String name     = server.arg("name");
+    String calories = server.arg("calories");
+    String protein  = server.arg("protein");
+    String carbs    = server.arg("carbs");
+    String fat      = server.arg("fat");
+  
+    // Append to food_db.csv
+    File f = SD.open(foodDBFileName, FILE_APPEND);
+    if (!f) {
+      server.send(500, "text/plain", "Failed to open food_db.csv");
+      return;
     }
+  
+    f.println(name + "," + calories + "," + protein + "," + carbs + "," + fat);
+    f.close();
+    
+    // Optional: Add to RAM database immediately
+    foodDatabase.push_back({
+      name,
+      calories.toFloat(),
+      protein.toFloat(),
+      carbs.toFloat(),
+      fat.toFloat()
+    });
+  
+    server.send(200, "text/plain", "✅ New food added: " + name);
+  });
+  
+  server.on("/select", HTTP_GET, handleSelect);
+  server.begin();
+  Serial.println("🌐 HTTP server started");
+
+  // — BLE processing queue & task on core 1 —
+  bleQueue = xQueueCreate(10, sizeof(BLECommand));
+  xTaskCreatePinnedToCore(
+    BLEProcessTask,
+    "BLEProcessTask",
+    4096,
+    nullptr,
+    2,
+    nullptr,
+    1
+  );
+
+  resetDailyTotals();
 }
 
-void readAllTemperatures(float* temps)
-{
-    sensors.requestTemperatures();
-    vTaskDelay(pdMS_TO_TICKS(200)); // Wait for conversion
-    for (int i = 0; i < sensorCount; i++)
-    {
-        temps[i] = sensors.getTempC(sensorAddresses[i]);
-    }
-}
+// ─── MAIN LOOP ────────────────────────────────────────────────────────────────
+void loop() {
+  server.handleClient();
 
-void logTemperatureData(float* temps)
-{
-    String logEntry = String(millis());
-    for (int i = 0; i < sensorCount; i++)
-    {
-        logEntry += ",";
-        if (temps[i] == DEVICE_DISCONNECTED_C)
-            logEntry += "NaN";
-        else
-            logEntry += String(temps[i], 2);
-    }
-    logEntry += "\n";
-    logBuffer += logEntry;
-}
+  webSocket.loop();
 
-// ------------------- Auto Mode (Graphing and Zoom) -------------------
-void autoModeLoop()
-{
-    static TickType_t lastMeasurementTick = xTaskGetTickCount();
-    float temps[MAX_SENSORS] = {0};
-
-    // Layout margins.
-    int leftMargin = 40;    // for y-axis scale
-    int headerHeight = 30;  // for live sensor header row
-    int graphX, graphY, graphWidth, graphHeight;
-    int minGraphTemp, maxGraphTemp;
-
-    if (!zoomMode)
-    {
-        // Normal mode.
-        graphX = leftMargin;
-        graphY = headerHeight;
-        graphWidth = tft.width() - leftMargin - 10;
-        graphHeight = tft.height() - headerHeight - 20;
-        minGraphTemp = -10;
-        maxGraphTemp = 110;
-    }
-    else
-    {
-        // Zoom mode: show only the most recent 10 points.
-        const int zoomPoints = 10;
-        graphX = leftMargin;
-        graphY = headerHeight;
-        graphWidth = tft.width() - leftMargin - 10;
-        graphHeight = tft.height() - headerHeight - 20;
-        // Use sensor 1's last reading as reference.
-        float ref = tempHistories[0][(currentIndex + MAX_STORED_POINTS - 1) % MAX_STORED_POINTS];
-        minGraphTemp = ref - 10;
-        maxGraphTemp = ref + 10;
-    }
-
-    TickType_t now = xTaskGetTickCount();
-    if (now - lastMeasurementTick >= pdMS_TO_TICKS(1000))
-    {
-        readAllTemperatures(temps);
-        if (sdAvailable) { logTemperatureData(temps); }
-        for (int i = 0; i < sensorCount; i++)
-        {
-            tempHistories[i][currentIndex] = temps[i];
-        }
-        currentIndex = (currentIndex + 1) % MAX_STORED_POINTS;
-
-        // Draw header (live values).
-        tft.fillRect(leftMargin, 0, tft.width() - leftMargin, headerHeight, TFT_BLACK);
-        int headerY = 5;
-        int xPos = leftMargin + 5;
-        for (int i = 0; i < sensorCount; i++)
-        {
-            char valueStr[20];
-            sprintf(valueStr, "S%d: %.2f C", i + 1, temps[i]);
-            tft.setTextColor(sensorColors[i], TFT_BLACK);
-            tft.setTextSize(1);
-            tft.drawString(valueStr, xPos, headerY);
-            xPos += tft.textWidth(valueStr) + 10;
-        }
-
-        // Draw left margin for y-axis scale.
-        int calcGraphHeight = tft.height() - headerHeight - 20;
-        tft.fillRect(0, headerHeight, leftMargin, calcGraphHeight, TFT_BLACK);
-
-        // Draw graph background.
-        tft.fillRect(graphX, headerHeight, graphWidth, calcGraphHeight, TFT_BLACK);
-        tft.drawRect(graphX, headerHeight, graphWidth, calcGraphHeight, TFT_WHITE);
-
-        // Draw y-axis scale numbers and grid.
-        for (int t = minGraphTemp; t <= maxGraphTemp; t += 10)
-        {
-            int y = headerHeight + calcGraphHeight - ((t - minGraphTemp) * calcGraphHeight / (maxGraphTemp - minGraphTemp));
-            tft.setCursor(0, y - 4);
-            tft.setTextColor(TFT_WHITE, TFT_BLACK);
-            tft.setTextSize(1);
-            tft.printf("%d", t);
-            tft.drawLine(graphX, y, graphX + graphWidth, y, TFT_DARKGREY);
-        }
-
-        // Draw sensor graphs.
-        if (!zoomMode)
-        {
-            // Normal mode: plot full stored history.
-            for (int s = 0; s < sensorCount; s++)
-            {
-                int prevX = graphX;
-                int prevY = headerHeight + calcGraphHeight - ((tempHistories[s][(currentIndex + 1) % MAX_STORED_POINTS] - minGraphTemp) *
-                                                              calcGraphHeight / (maxGraphTemp - minGraphTemp));
-                for (int i = 1; i < MAX_STORED_POINTS; i++)
-                {
-                    int idx = (currentIndex + i) % MAX_STORED_POINTS;
-                    int x = graphX + (i * graphWidth / MAX_STORED_POINTS);
-                    int y = headerHeight + calcGraphHeight - ((tempHistories[s][idx] - minGraphTemp) * calcGraphHeight / (maxGraphTemp - minGraphTemp));
-                    y = constrain(y, headerHeight, headerHeight + calcGraphHeight);
-                    tft.drawLine(prevX, prevY, x, y, sensorColors[s]);
-                    prevX = x;
-                    prevY = y;
-                }
-            }
-        }
-        else
-        {
-            // Zoom mode: plot only the most recent 10 points.
-            const int N = 10;
-            unsigned int startIdx = (currentIndex + MAX_STORED_POINTS - N) % MAX_STORED_POINTS;
-            for (int s = 0; s < sensorCount; s++)
-            {
-                int prevX = graphX;
-                int prevY = headerHeight + calcGraphHeight - ((tempHistories[s][startIdx] - minGraphTemp) * calcGraphHeight / (maxGraphTemp - minGraphTemp));
-                for (int i = 1; i < N; i++)
-                {
-                    int idx = (startIdx + i) % MAX_STORED_POINTS;
-                    int x = graphX + (i * graphWidth / (N - 1));
-                    int y = headerHeight + calcGraphHeight - ((tempHistories[s][idx] - minGraphTemp) * calcGraphHeight / (maxGraphTemp - minGraphTemp));
-                    y = constrain(y, headerHeight, headerHeight + calcGraphHeight);
-                    tft.drawLine(prevX, prevY, x, y, sensorColors[s]);
-                    prevX = x;
-                    prevY = y;
-                }
-            }
-        }
-        lastMeasurementTick = now;
-    }
+// Send weight update over WebSocket every 1 sec
+static unsigned long lastSend = 0;
+if (millis() - lastSend > 1000) {
+  lastSend = millis();
+  String payload = String(weight, 0);
+  webSocket.broadcastTXT(payload);
 }
 
 
-// ------------------- Initialization Functions -------------------
-void initSensors()
-{
-    sensors.begin();
-    sensorCount = min((unsigned int)sensors.getDeviceCount(), MAX_SENSORS);
-    for (int i = 0; i < sensorCount; i++)
-    {
-        sensors.getAddress(sensorAddresses[i], i);
+  // Non-blocking time sync detection
+  if (!timeSynced && time(nullptr) > 24 * 3600) { // > Jan 2, 1970
+    Serial.println("✅ Time synchronized!");
+    timeSynced = true;
+  }
+
+  if (needDisplayUpdate) {
+    updateDisplay();
+    needDisplayUpdate = false;
+  }
+  delay(50);
+}
+
+// ─── BLE PROCESS TASK ─────────────────────────────────────────────────────────
+void BLEProcessTask(void*) {
+  BLECommand cmd;
+  for (;;) {
+    if (xQueueReceive(bleQueue, &cmd, portMAX_DELAY) == pdTRUE) {
+      String s; s.reserve(cmd.len);
+      for (int i = 0; i < cmd.len; i++) s += char(cmd.data[i]);
+      s.trim();
+      String resp = processSelection(s);
+      pTxCharacteristic->setValue(resp.c_str());
+      pTxCharacteristic->notify();
     }
-    sensors.setResolution(9);
+  }
 }
 
-void initScreen()
-{
-    // Initialize the touchscreen reset pin.
-    pinMode(BOARD_TOUCH_RST, OUTPUT);
-    digitalWrite(BOARD_TOUCH_RST, LOW);
-    vTaskDelay(pdMS_TO_TICKS(500));
-    digitalWrite(BOARD_TOUCH_RST, HIGH);
-
-    tft.begin();
-    tft.setRotation(3);
-    tft.fillScreen(TFT_BLACK);
-    tft.setTextColor(TFT_GREEN);
-    tft.setTextSize(2);
-    touch.setPins(BOARD_TOUCH_RST, BOARD_TOUCH_IRQ);
-    touch.begin(Wire, CST816_SLAVE_ADDRESS, BOARD_I2C_SDA, BOARD_I2C_SCL);
-    // Set the center button coordinate to define the home button.
-    touch.setCenterButtonCoordinate(85, 360);
-    touch.disableAutoSleep();
-}
-
-void waitForHomeButtonTouch()
-{
-    Serial.println("Waiting for home button press...");
-    tft.fillScreen(TFT_BLACK);
-    tft.println("Waiting for home button press...");
-    // Set home button callback.
-    touch.setHomeButtonCallback(homeButtonCallback, (void*)&startAuto);
-    while (!startAuto)
-    {
-        uint8_t pts = touch.getPoint(ts_x, ts_y, touch.getSupportTouchPoint());
-        if (pts > 0)
-        {
-            for (int i = 0; i < pts; i++)
-            {
-                int dx = ts_x[i] - 85;
-                int dy = ts_y[i] - 360;
-                if (abs(dx) < 20 && abs(dy) < 20)
-                {
-                    startAuto = true;
-                    break;
-                }
-            }
-        }
-        vTaskDelay(pdMS_TO_TICKS(10));
+// ─── IMPLEMENTATIONS ───────────────────────────────────────────────────────────
+void loadFoodDatabase() {
+  if (!SD.exists(foodDBFileName)) {
+    Serial.println("⚠️ food_db.csv missing");
+    return;
+  }
+  File f = SD.open(foodDBFileName, FILE_READ);
+  if (!f) {
+    Serial.println("⚠️ Cannot open food_db.csv");
+    return;
+  }
+  bool first = true;
+  int order = 0;
+  foodDatabase.clear();
+  Serial.println("Loading DB...");
+  while (f.available()) {
+    String line = f.readStringUntil('\n');
+    line.trim();
+    if (line.isEmpty()) continue;
+    if (first && line.startsWith("Name")) { first = false; continue; }
+    first = false;
+    std::vector<String> cols;
+    int start = 0, idx;
+    for (int i = 0; i < 4; ++i) {
+      idx = line.indexOf(',', start);
+      if (idx == -1) break;
+      cols.push_back(line.substring(start, idx));
+      start = idx + 1;
     }
+    cols.push_back(line.substring(start));
+    if (cols.size() < 5) {
+      Serial.println("⚠️ Skipping malformed line: " + line);
+      continue;
+    }
+    foodDatabase.push_back({
+      cols[0],
+      cols[1].toFloat(),
+      cols[2].toFloat(),
+      cols[3].toFloat(),
+      cols[4].toFloat(),
+      order++,   // addedOrder
+      0          // usageCount (will fill later)
+    });
+    Serial.println(" • " + cols[0]);
+  }
+  f.close();
+  Serial.printf("✅ %u items loaded\n", (unsigned)foodDatabase.size());
 }
 
-// ------------------- Setup & Loop -------------------
-void setup()
-{
-    Serial.begin(115200);
-    Wire.begin(BOARD_I2C_SDA, BOARD_I2C_SCL);
-    initSensors();
-    initScreen();
-    waitForHomeButtonTouch();
-
-    // Clear waiting message and mark auto mode as started.
-    tft.fillScreen(TFT_BLACK);
-    autoStarted = true;
-
-    // Start MainTask on core 0.
-    xTaskCreatePinnedToCore(MainTask, "MainTask", 8192U, nullptr, 1U, nullptr, 0);
-    // Start TouchTask on core 1.
-    xTaskCreatePinnedToCore(TouchTask, "TouchTask", 4096U, nullptr, 2U, nullptr, 1);
-    vTaskDelete(nullptr);
+void analyzeFoodLog() {
+  if (!SD.exists(logFileName)) {
+    Serial.println("⚠️ No food_log.csv yet, skipping usage analysis");
+    return;
+  }
+  File f = SD.open(logFileName, FILE_READ);
+  if (!f) {
+    Serial.println("⚠️ Cannot open food_log.csv");
+    return;
+  }
+  bool first = true;
+  while (f.available()) {
+    String line = f.readStringUntil('\n');
+    line.trim();
+    if (line.isEmpty()) continue;
+    if (first && line.startsWith("DateTime")) { first = false; continue; }
+    first = false;
+    std::vector<String> cols;
+    int start = 0, idx;
+    idx = line.indexOf(',', start); start = idx + 1;
+    idx = line.indexOf(',', start); start = idx + 1;
+    idx = line.indexOf(',', start);
+    String foodName = line.substring(start, idx);
+    foodName.trim();
+    for (auto& item : foodDatabase) {
+      if (item.name.equalsIgnoreCase(foodName)) {
+        item.usageCount++;
+        break;
+      }
+    }
+  }
+  f.close();
+  Serial.println("✅ Usage counts analyzed");
 }
 
-void loop()
-{
-    vTaskDelay(portMAX_DELAY);
+
+void resetDailyTotals() {
+  dailyTotals = {0,0,0,0};
+  currentFood = nullptr;
+  needDisplayUpdate = true;
+}
+
+// Shared logic for HTTP & BLE
+String processSelection(const String& q) {
+  for (auto& it : foodDatabase) {
+    if (q.equalsIgnoreCase(it.name)) {
+      currentFood = &it;
+      logMeasurement();
+      float factor = weight / 100.0;
+      dailyTotals.calories += it.calories * factor;
+      dailyTotals.protein  += it.protein  * factor;
+      dailyTotals.carbs    += it.carbs    * factor;
+      dailyTotals.fat      += it.fat      * factor;
+      needDisplayUpdate = true;
+
+      String r = "Logged: " + it.name + "\n\n"
+               + "Daily Totals:\n"
+               + "Calories: " + String(dailyTotals.calories,2) + "\n"
+               + "Protein:  " + String(dailyTotals.protein,2)  + "\n"
+               + "Carbs:    " + String(dailyTotals.carbs,2)    + "\n"
+               + "Fat:      " + String(dailyTotals.fat,2);
+      return r;
+    }
+  }
+  return "❌ Not found: " + q;
+}
+
+void handleRoot() {
+  String html = "<!DOCTYPE html><html><head><meta charset='utf-8'>"
+                "<title>Smart Kitchen Scale</title>"
+                "<style>"
+                "body { font-family: Arial, sans-serif; margin: 20px; background-color: #f0f8ff; }"
+                "h1 { color: #333; }"
+                "select, input[type='text'], input[type='number'], button { padding: 12px; margin-bottom: 10px; font-size: 18px; border-radius: 5px; border: none; }"
+                "button { background-color: #4CAF50; color: white; }"
+                "button:hover { background-color: #45a049; }"
+                "pre { background-color: #e0f7fa; padding: 10px; border-radius: 5px; }"
+                "#toast { visibility: hidden; min-width: 250px; background-color: #4CAF50; color: white; text-align: center; border-radius: 5px; padding: 16px; position: fixed; z-index: 1; left: 50%; bottom: 30px; transform: translateX(-50%); font-size: 17px; }"
+                "#toast.show { visibility: visible; animation: fadein 0.5s, fadeout 0.5s 2.5s; }"
+                "@keyframes fadein { from { bottom: 0; opacity: 0; } to { bottom: 30px; opacity: 1; } }"
+                "@keyframes fadeout { from { bottom: 30px; opacity: 1; } to { bottom: 0; opacity: 0; } }"
+                ".controls { display: flex; flex-wrap: wrap; gap: 10px; align-items: center; margin-bottom: 20px; }"
+                ".controls select, .controls input { flex: 1; min-width: 150px; }"
+                "@media (min-width: 768px) { select, input[type='text'], input[type='number'], button { width: auto; } }"
+                "</style>"
+                "<script>var foods = [";
+
+  // Inject food array dynamically
+  for (size_t i = 0; i < foodDatabase.size(); i++) {
+    const auto& f = foodDatabase[i];
+    html += "{name:'" + f.name + "',usage:" + String(f.usageCount) + ",order:" + String(f.addedOrder) + "}";
+    if (i != foodDatabase.size() - 1) html += ",";
+  }
+
+  html += "];"
+          "var ws;"
+          "function startWebSocket() {"
+          "  ws = new WebSocket('ws://' + location.hostname + ':81');"
+          "  ws.onmessage = function(event) {"
+          "    document.getElementById('liveWeight').innerText = event.data + 'g';"
+          "  };"
+          "  ws.onclose = function() { setTimeout(startWebSocket, 2000); };"
+          "}"
+          "function showFoods() {"
+          "  var container = document.getElementById('foodList');"
+          "  var query = document.getElementById('searchInput').value.toLowerCase();"
+          "  container.innerHTML = '';"
+          "  foods.forEach(function(f, idx) {"
+          "    if (f.name.toLowerCase().includes(query)) {"
+          "      var wrapper = document.createElement('div');"
+          "      wrapper.style.display = 'flex';"
+          "      wrapper.style.alignItems = 'center';"
+          "      wrapper.style.marginBottom = '10px';"
+          "      var btn = document.createElement('button');"
+          "      btn.className = 'foodButton';"
+          "      btn.innerText = f.name;"
+          "      btn.style.flex = '1';"
+          "      btn.onclick = function() { logFood(f.name); };"
+          "      var del = document.createElement('button');"
+          "      del.innerText = '❌';"
+          "      del.style.backgroundColor = '#f44336';"
+          "      del.style.marginLeft = '10px';"
+          "      del.onclick = function() { confirmDelete(f.name, idx); };"
+          "      wrapper.appendChild(btn);"
+          "      wrapper.appendChild(del);"
+          "      container.appendChild(wrapper);"
+          "    }"
+          "  });"
+          "}"
+          "function sortFoods() {"
+          "  var mode = document.getElementById('sortSelect').value;"
+          "  if (mode == 'newest') foods.sort((a,b)=>b.order-a.order);"
+          "  if (mode == 'oldest') foods.sort((a,b)=>a.order-b.order);"
+          "  if (mode == 'most') foods.sort((a,b)=>b.usage-a.usage);"
+          "  if (mode == 'least') foods.sort((a,b)=>a.usage-b.usage);"
+          "  showFoods();"
+          "}"
+          "function logFood(food) {"
+          "  fetch('/select?food=' + encodeURIComponent(food))"
+          "    .then(response => response.text())"
+          "    .then(text => { document.getElementById('status').innerText = text; showToast('✅ Food logged!'); })"
+          "    .catch(err => { document.getElementById('status').innerText = 'Error logging food'; showToast('❌ Error logging food'); });"
+          "}"
+          "function submitNewFood() {"
+          "  var name = document.getElementById('newName').value.trim();"
+          "  var calories = document.getElementById('newCalories').value.trim();"
+          "  var protein = document.getElementById('newProtein').value.trim();"
+          "  var carbs = document.getElementById('newCarbs').value.trim();"
+          "  var fat = document.getElementById('newFat').value.trim();"
+          "  if (name && calories && protein && carbs && fat) {"
+          "    var query = '/addfood?name=' + encodeURIComponent(name) +"
+          "                '&calories=' + encodeURIComponent(calories) +"
+          "                '&protein=' + encodeURIComponent(protein) +"
+          "                '&carbs=' + encodeURIComponent(carbs) +"
+          "                '&fat=' + encodeURIComponent(fat);"
+          "    fetch(query)"
+          "      .then(response => response.text())"
+          "      .then(text => {"
+          "        document.getElementById('status').innerText = text;"
+          "        foods.push({name:name, usage:0, order:foods.length});"
+          "        sortFoods();"
+          "        clearNewFoodForm();"
+          "        showToast('✅ Food \"' + name + '\" added!');"
+          "      })"
+          "      .catch(err => { document.getElementById('status').innerText = 'Error adding food'; showToast('❌ Error adding food'); });"
+          "  } else { showToast('⚠️ Fill all fields'); }"
+          "}"
+          "function confirmDelete(name, index) {"
+          "  if (confirm('Are you sure you want to delete \"' + name + '\"?')) {"
+          "    fetch('/deletefood?name=' + encodeURIComponent(name))"
+          "      .then(response => response.text())"
+          "      .then(text => {"
+          "        document.getElementById('status').innerText = text;"
+          "        foods.splice(index, 1);"
+          "        showFoods();"
+          "        showToast('✅ Food \"' + name + '\" deleted!');"
+          "      })"
+          "      .catch(err => { document.getElementById('status').innerText = 'Error deleting food'; showToast('❌ Error deleting food'); });"
+          "  }"
+          "}"
+          "function clearNewFoodForm() {"
+          "  document.getElementById('newName').value='';"
+          "  document.getElementById('newProtein').value='';"
+          "  document.getElementById('newCarbs').value='';"
+          "  document.getElementById('newFat').value='';"
+          "  document.getElementById('newCalories').value='';"
+          "}"
+          "function calculateCalories() {"
+          "  var protein=parseFloat(document.getElementById('newProtein').value)||0;"
+          "  var carbs=parseFloat(document.getElementById('newCarbs').value)||0;"
+          "  var fat=parseFloat(document.getElementById('newFat').value)||0;"
+          "  var calories=(protein*4)+(carbs*4)+(fat*9);"
+          "  document.getElementById('newCalories').value=calories.toFixed(1);"
+          "}"
+          "function resetTotals() {"
+          "  fetch('/reset')"
+          "    .then(response => response.text())"
+          "    .then(text => { document.getElementById('status').innerText=text; showToast('✅ Totals reset!'); })"
+          "    .catch(err => { document.getElementById('status').innerText='Error resetting totals'; showToast('❌ Error resetting totals'); });"
+          "}"
+          "function showToast(message) {"
+          "  var toast = document.getElementById('toast');"
+          "  toast.innerText=message;"
+          "  toast.className='show';"
+          "  setTimeout(function(){ toast.className = toast.className.replace('show',''); },3000);"
+          "}"
+          "window.onload=function(){startWebSocket();sortFoods();};"
+          "</script>"
+          "</head><body>"
+          "<h1>Smart Kitchen Scale</h1>"
+          "<h2>Current Weight: <span id='liveWeight'>0g</span></h2>"
+          "<div class='controls'>"
+          "<select id='sortSelect' onchange='sortFoods()'>"
+          "<option value='newest'>Newest Added</option>"
+          "<option value='oldest'>Oldest Added</option>"
+          "<option value='most'>Most Selected</option>"
+          "<option value='least'>Least Selected</option>"
+          "</select>"
+          "<input type='text' id='searchInput' oninput='sortFoods()' placeholder='Search food...'>"
+          "</div>"
+          "<div id='foodList'></div>"
+          "<h2>Add New Food</h2>"
+          "<input type='text' id='newName' placeholder='Name (e.g. Apple)'>"
+          "<input type='number' id='newProtein' placeholder='Protein per 100g' oninput='calculateCalories()'>"
+          "<input type='number' id='newCarbs' placeholder='Carbs per 100g' oninput='calculateCalories()'>"
+          "<input type='number' id='newFat' placeholder='Fat per 100g' oninput='calculateCalories()'>"
+          "<input type='number' id='newCalories' placeholder='Calories per 100g' readonly>"
+          "<button onclick='submitNewFood()'>Add New Food</button>"
+          "<h2>Reset Daily Totals</h2>"
+          "<button onclick='resetTotals()'>Reset Totals</button>"
+          "<h2>Status:</h2><pre id='status'>Select, add, or delete a food</pre>"
+          "<div id='toast'></div>"
+          "</body></html>";
+
+  server.send(200, "text/html", html);
+}
+
+
+
+void handleSelect() {
+  if (!server.hasArg("food")) {
+    server.send(400, "text/plain", "Missing food parameter");
+    return;
+  }
+  String resp = processSelection(server.arg("food"));
+  server.send(resp.startsWith("❌") ? 404 : 200, "text/plain", resp);
+}
+
+void logMeasurement() {
+  File f = SD.open(logFileName, FILE_APPEND);
+  if (!f) return;
+
+  String stamp;
+  if (timeSynced && WiFi.status() == WL_CONNECTED) {
+    time_t now = time(nullptr);
+    struct tm tm;
+    localtime_r(&now, &tm);
+    char buf[20];
+    strftime(buf, sizeof(buf), "%Y-%m-%d %H:%M:%S", &tm);
+    stamp = buf;
+  } else {
+    stamp = "offline mode";
+  }
+
+  float factor = weight / 100.0;
+  String line = stamp + "," + String(weight,0) + ","
+                + currentFood->name + ","
+                + String(currentFood->calories * factor,2) + ","
+                + String(currentFood->protein  * factor,2) + ","
+                + String(currentFood->carbs    * factor,2) + ","
+                + String(currentFood->fat      * factor,2);
+  f.println(line);
+  f.close();
+  Serial.println("Logged: " + line);
+}
+
+void updateDisplay() {
+  tft.fillScreen(TFT_BLACK);
+  tft.setCursor(0,0);
+  tft.setTextSize(2);
+  tft.println("Kitchen Scale");
+  tft.printf("Wt: %.0f g\n\n", weight);
+
+  if (currentFood) {
+    float fct = weight / 100.0;
+    tft.println(currentFood->name);
+    tft.printf("Cal: %.0f  Prot: %.0f\n",
+               currentFood->calories * fct,
+               currentFood->protein  * fct);
+    tft.printf("Carb: %.0f  Fat:  %.0f\n\n",
+               currentFood->carbs    * fct,
+               currentFood->fat      * fct);
+  } else {
+    tft.println("No selection\n");
+  }
+
+  tft.println("Daily Totals:");
+  tft.printf("Cal: %.0f  Prot: %.0f\n",
+             dailyTotals.calories,
+             dailyTotals.protein);
+  tft.printf("Carb: %.0f  Fat:  %.0f\n",
+             dailyTotals.carbs,
+             dailyTotals.fat);
 }
