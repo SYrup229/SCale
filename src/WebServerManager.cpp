@@ -227,122 +227,184 @@ void WebServerManager::handleRoot() {
                 ".daily-container { display: flex; flex-wrap: wrap; align-items: center; gap: 20px; margin-top: 20px; }"
                 "</style>";
 
+  // Generate JS array of food objects with color
   html += "<script>var foods = [";
   for (size_t i = 0; i < foodManager.getDatabase().size(); i++) {
       const auto& f = foodManager.getDatabase()[i];
-      html += "{name:'" + f.name + "',usage:" + String(f.usageCount) + ",order:" + String(f.addedOrder) + "}";
+      String color = foodManager.foodColorMap.count(f.name) ? foodManager.foodColorMap[f.name] : "";
+      html += "{name:'" + f.name + "',usage:" + String(f.usageCount) +
+              ",order:" + String(f.addedOrder) + ",color:'" + color + "'}";
       if (i != foodManager.getDatabase().size() - 1) html += ",";
   }
+  html += "];";
 
-  html += "];"
-          "var ws;"
-          "var macroChart;"
-          "function startWebSocket() {"
-          "  ws = new WebSocket('ws://' + location.hostname + ':81');"
-          "  ws.onmessage = function(event) {"
-          "    document.getElementById('liveWeight').innerText = event.data + 'g';"
-          "  };"
-          "  ws.onclose = function() { setTimeout(startWebSocket, 2000); };"
-          "}"
-          "function showFoods() {"
-          "  var container = document.getElementById('foodList');"
-          "  var query = document.getElementById('searchInput').value.toLowerCase();"
-          "  container.innerHTML = '';"
-          "  foods.forEach(function(f, idx) {"
-          "    if (f.name.toLowerCase().includes(query)) {"
-          "      var wrapper = document.createElement('div');"
-          "      wrapper.style.display = 'flex';"
-          "      wrapper.style.alignItems = 'center';"
-          "      wrapper.style.marginBottom = '10px';"
-          "      var btn = document.createElement('button');"
-          "      btn.className = 'foodButton';"
-          "      btn.innerText = f.name;"
-          "      btn.style.flex = '1';"
-          "      btn.onclick = function() { logFood(f.name); };"
-          "      var del = document.createElement('button');"
-          "      del.innerText = '❌';"
-          "      del.style.backgroundColor = '#f44336';"
-          "      del.style.marginLeft = '10px';"
-          "      del.onclick = function() { confirmDelete(f.name, idx); };"
-          "      wrapper.appendChild(btn);"
-          "      wrapper.appendChild(del);"
-          "      container.appendChild(wrapper);"
-          "    }"
-          "  });"
-          "}"
-          "function sortFoods() {"
-          "  var mode = document.getElementById('sortSelect').value;"
-          "  if (mode == 'newest') foods.sort((a,b)=>b.order-a.order);"
-          "  if (mode == 'oldest') foods.sort((a,b)=>a.order-b.order);"
-          "  if (mode == 'most') foods.sort((a,b)=>b.usage-a.usage);"
-          "  if (mode == 'least') foods.sort((a,b)=>a.usage-b.usage);"
-          "  showFoods();"
-          "}"
-          "function logFood(food) {"
-          "  let grams = prompt('How many grams of ' + food + '?');"
-          "  if (!grams || isNaN(grams) || grams <= 0) return;"
-          "  let color = prompt('What color is the food (e.g. red, green)?');"
-          "  if (!color) return;"
-          "  fetch(`/select?food=${encodeURIComponent(food)}&grams=${grams}&color=${encodeURIComponent(color.toLowerCase())}`)"
-          "    .then(r=>r.text()).then(t=>{document.getElementById('status').innerText=t;updateDailyTotals();showToast('✅ Food logged!');})"
-          "    .catch(_=>{document.getElementById('status').innerText='Error logging food';showToast('❌ Error');});"
-          "}"
-          "function updateDailyTotals() {"
-          "  fetch('/daily')"
-          "    .then(r => r.json())"
-          "    .then(data => {"
-          "      var div = document.getElementById('dailyTotals');"
-          "      div.innerHTML = 'Calories: ' + data.calories.toFixed(0) + ' kcal<br>' +"
-          "                     'Protein: ' + data.protein.toFixed(0) + ' g<br>' +"
-          "                     'Carbs: ' + data.carbs.toFixed(0) + ' g<br>' +"
-          "                     'Fat: ' + data.fat.toFixed(0) + ' g';"
-          "      var protein = data.protein;"
-          "      var carbs = data.carbs;"
-          "      var fat = data.fat;"
-          "      if (protein === 0 && carbs === 0 && fat === 0) {"
-          "        macroChart.data.datasets[0].data = [1];"
-          "        macroChart.data.datasets[0].backgroundColor = ['#cccccc'];"
-          "        macroChart.data.labels = ['Empty'];"
-          "      } else {"
-          "        macroChart.data.datasets[0].data = [protein, carbs, fat];"
-          "        macroChart.data.datasets[0].backgroundColor = ['#4CAF50', '#2196F3', '#FFC107'];"
-          "        macroChart.data.labels = ['Protein', 'Carbs', 'Fat'];"
-          "      }"
-          "      macroChart.update();"
-          "    });"
-          "}"
-          "function resetTotals() {"
-          "  fetch('/reset').then(r=>r.text()).then(t=>{document.getElementById('status').innerText=t;updateDailyTotals();showToast('✅ Totals reset!');});"
-          "}"
-          "function confirmDelete(name, index) {"
-          "  if (confirm('Are you sure you want to delete ' + name + '?')) {"
-          "    fetch('/deletefood?name=' + encodeURIComponent(name))"
-          "      .then(r=>r.text()).then(t=>{document.getElementById('status').innerText=t;foods.splice(index,1);showFoods();showToast('✅ Deleted');})"
-          "      .catch(_=>{document.getElementById('status').innerText='Error deleting';showToast('❌ Error deleting');});"
-          "  }"
-          "}"
-          "function submitNewFood() {"
-          "  let n=document.getElementById('newName').value.trim(), p=document.getElementById('newProtein').value.trim(), c=document.getElementById('newCarbs').value.trim(), f=document.getElementById('newFat').value.trim(), cal=document.getElementById('newCalories').value.trim();"
-          "  if(n&&p&&c&&f&&cal){"
-          "    let q='/addfood?name='+encodeURIComponent(n)+'&protein='+p+'&carbs='+c+'&fat='+f+'&calories='+cal;"
-          "    fetch(q).then(r=>r.text()).then(t=>{document.getElementById('status').innerText=t;foods.push({name:n,usage:0,order:foods.length});sortFoods();clearNewFoodForm();showToast('✅ Added');});"
-          "  }else{showToast('⚠️ Fill all fields');}"
-          "}"
-          "function calculateCalories() {"
-          "  var p=parseFloat(document.getElementById('newProtein').value)||0, c=parseFloat(document.getElementById('newCarbs').value)||0, f=parseFloat(document.getElementById('newFat').value)||0;"
-          "  document.getElementById('newCalories').value = (p*4+c*4+f*9).toFixed(1);"
-          "}"
-          "function clearNewFoodForm() {"
-          "  ['newName','newProtein','newCarbs','newFat','newCalories'].forEach(id=>document.getElementById(id).value='');"
-          "}"
-          "function showToast(msg) {"
-          "  var t = document.getElementById('toast'); t.innerText=msg; t.className='show'; setTimeout(()=>{t.className='';},3000);"
-          "}"
-          "window.onload=function(){startWebSocket();sortFoods();updateDailyTotals();var ctx=document.getElementById('macroChart').getContext('2d');macroChart=new Chart(ctx,{type:'pie',data:{labels:[],datasets:[{data:[],backgroundColor:[]}]},options:{responsive:false,plugins:{legend:{position:'bottom'}}}});};"
-          "</script>";
+  html += R"rawliteral(
+    var ws;
+    var macroChart;
 
-  html += "</head><body>"
-          "<h1>Smart Kitchen Scale</h1>"
+    function startWebSocket() {
+      ws = new WebSocket('ws://' + location.hostname + ':81');
+      ws.onmessage = function(event) {
+        document.getElementById('liveWeight').innerText = event.data + 'g';
+      };
+      ws.onclose = function() { setTimeout(startWebSocket, 2000); };
+    }
+
+    function showFoods() {
+      var container = document.getElementById('foodList');
+      var query = document.getElementById('searchInput').value.toLowerCase();
+      container.innerHTML = '';
+      foods.forEach(function(f, idx) {
+        if (f.name.toLowerCase().includes(query)) {
+          var wrapper = document.createElement('div');
+          wrapper.style.display = 'flex';
+          wrapper.style.alignItems = 'center';
+          wrapper.style.marginBottom = '10px';
+
+          var btn = document.createElement('button');
+          btn.className = 'foodButton';
+          btn.innerText = f.name;
+          btn.style.flex = '1';
+          btn.onclick = function() { logFood(f); };
+
+          var del = document.createElement('button');
+          del.innerText = '❌';
+          del.style.backgroundColor = '#f44336';
+          del.style.marginLeft = '10px';
+          del.onclick = function() { confirmDelete(f.name, idx); };
+
+          wrapper.appendChild(btn);
+          wrapper.appendChild(del);
+          container.appendChild(wrapper);
+        }
+      });
+    }
+
+    function sortFoods() {
+      var mode = document.getElementById('sortSelect').value;
+      if (mode == 'newest') foods.sort((a,b)=>b.order-a.order);
+      if (mode == 'oldest') foods.sort((a,b)=>a.order-b.order);
+      if (mode == 'most') foods.sort((a,b)=>b.usage-a.usage);
+      if (mode == 'least') foods.sort((a,b)=>a.usage-b.usage);
+      showFoods();
+    }
+
+    function logFood(foodObj) {
+      let grams = prompt('How many grams of ' + foodObj.name + '?');
+      if (!grams || isNaN(grams) || grams <= 0) return;
+
+      let color = foodObj.color;
+      if (!color) {
+        color = prompt('What color is the food (e.g. red, green)?');
+        if (!color) return;
+      }
+
+      fetch(`/select?food=${encodeURIComponent(foodObj.name)}&grams=${grams}&color=${encodeURIComponent(color.toLowerCase())}`)
+        .then(r => r.text())
+        .then(t => {
+          document.getElementById('status').innerText = t;
+          updateDailyTotals();
+          showToast('✅ Food logged!');
+        })
+        .catch(_ => {
+          document.getElementById('status').innerText = 'Error logging food';
+          showToast('❌ Error');
+        });
+    }
+
+    function updateDailyTotals() {
+      fetch('/daily')
+        .then(r => r.json())
+        .then(data => {
+          var div = document.getElementById('dailyTotals');
+          div.innerHTML = 'Calories: ' + data.calories.toFixed(0) + ' kcal<br>' +
+                          'Protein: ' + data.protein.toFixed(0) + ' g<br>' +
+                          'Carbs: ' + data.carbs.toFixed(0) + ' g<br>' +
+                          'Fat: ' + data.fat.toFixed(0) + ' g';
+          var protein = data.protein;
+          var carbs = data.carbs;
+          var fat = data.fat;
+          if (protein === 0 && carbs === 0 && fat === 0) {
+            macroChart.data.datasets[0].data = [1];
+            macroChart.data.datasets[0].backgroundColor = ['#cccccc'];
+            macroChart.data.labels = ['Empty'];
+          } else {
+            macroChart.data.datasets[0].data = [protein, carbs, fat];
+            macroChart.data.datasets[0].backgroundColor = ['#4CAF50', '#2196F3', '#FFC107'];
+            macroChart.data.labels = ['Protein', 'Carbs', 'Fat'];
+          }
+          macroChart.update();
+        });
+    }
+
+    function resetTotals() {
+      fetch('/reset')
+        .then(r => r.text())
+        .then(t => {
+          document.getElementById('status').innerText = t;
+          updateDailyTotals();
+          showToast('✅ Totals reset!');
+        });
+    }
+
+    function confirmDelete(name, index) {
+      if (confirm('Are you sure you want to delete ' + name + '?')) {
+        fetch('/deletefood?name=' + encodeURIComponent(name))
+          .then(r => r.text())
+          .then(t => {
+            document.getElementById('status').innerText = t;
+            foods.splice(index, 1);
+            showFoods();
+            showToast('✅ Deleted');
+          })
+          .catch(_ => {
+            document.getElementById('status').innerText = 'Error deleting';
+            showToast('❌ Error deleting');
+          });
+      }
+    }
+
+    function submitNewFood() {
+      let n=document.getElementById('newName').value.trim(), p=document.getElementById('newProtein').value.trim(), c=document.getElementById('newCarbs').value.trim(), f=document.getElementById('newFat').value.trim(), cal=document.getElementById('newCalories').value.trim();
+      if(n&&p&&c&&f&&cal){
+        let q='/addfood?name='+encodeURIComponent(n)+'&protein='+p+'&carbs='+c+'&fat='+f+'&calories='+cal;
+        fetch(q).then(r=>r.text()).then(t=>{
+          document.getElementById('status').innerText=t;
+          foods.push({name:n,usage:0,order:foods.length,color:''});
+          sortFoods();
+          clearNewFoodForm();
+          showToast('✅ Added');
+        });
+      }else{
+        showToast('⚠️ Fill all fields');
+      }
+    }
+
+    function calculateCalories() {
+      var p=parseFloat(document.getElementById('newProtein').value)||0, c=parseFloat(document.getElementById('newCarbs').value)||0, f=parseFloat(document.getElementById('newFat').value)||0;
+      document.getElementById('newCalories').value = (p*4+c*4+f*9).toFixed(1);
+    }
+
+    function clearNewFoodForm() {
+      ['newName','newProtein','newCarbs','newFat','newCalories'].forEach(id=>document.getElementById(id).value='');
+    }
+
+    function showToast(msg) {
+      var t = document.getElementById('toast'); t.innerText=msg; t.className='show'; setTimeout(()=>{t.className='';},3000);
+    }
+
+    window.onload=function(){
+      startWebSocket();
+      sortFoods();
+      updateDailyTotals();
+      var ctx=document.getElementById('macroChart').getContext('2d');
+      macroChart=new Chart(ctx,{type:'pie',data:{labels:[],datasets:[{data:[],backgroundColor:[]}]},options:{responsive:false,plugins:{legend:{position:'bottom'}}}});
+    };
+  )rawliteral";
+
+  html += "</script>";
+
+  html += "<body><h1>Smart Kitchen Scale</h1>"
           "<h2>Current Weight: <span id='liveWeight'>0g</span></h2>"
           "<div class='controls'>"
           "<select id='sortSelect' onchange='sortFoods()'>"
@@ -351,7 +413,7 @@ void WebServerManager::handleRoot() {
           "<option value='most'>Most Selected</option>"
           "<option value='least'>Least Selected</option>"
           "</select>"
-          "<input type='text' id='searchInput' oninput='sortFoods()' placeholder='Search food.'>"
+          "<input type='text' id='searchInput' oninput='sortFoods()' placeholder='Search food...'>"
           "</div>"
           "<div id='foodList'></div>"
 
@@ -373,11 +435,11 @@ void WebServerManager::handleRoot() {
           "<button onclick='resetTotals()'>Reset Totals</button>"
 
           "<h2>Status:</h2><pre id='status'>Select, add, or delete a food</pre>"
-          "<div id='toast'></div>"
-          "</body></html>";
+          "<div id='toast'></div></body></html>";
 
   server.send(200, "text/html", html);
 }
+
 
 
 
