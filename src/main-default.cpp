@@ -9,6 +9,7 @@
 // Wi-Fi credentials
 const char* ssid = "Mihaita";
 const char* password = "ciolan229";
+const int SD_CS = 10;
 
 // Globals
 float weight = 1000.0;  // initial weight (simulate 1kg)
@@ -30,10 +31,11 @@ void setup() {
 
   // Initialize hardware
   displayManager.begin();
-  foodManager.begin();
+  foodManager.begin(SD_CS);
   bleManager.begin();
   webServerManager.begin(ssid, password);
   webSocketManager.begin();
+  foodManager.begin(SD_CS);
 
   resetDailyTotals();
 }

@@ -1,23 +1,18 @@
 #include "FoodManager.h"
 #include <SD.h>
 
-void FoodManager::begin() {
-  if (!SD.begin(10)) {  // SD_CS pin
-    Serial.println("❌ SD init failed");
-    return;
+void FoodManager::begin(int sdCsPin) {
+  if (!SD.begin(sdCsPin)) {
+      Serial.println("❌ SD init failed");
+      return;
   }
   Serial.println("✅ SD initialized");
   loadDatabase();
   analyzeFoodLog();
-
-  if (!SD.exists(logFileName)) {
-    File f = SD.open(logFileName, FILE_WRITE);
-    if (f) {
-      f.println("DateTime,Weight(g),Food,Calories,Protein,Carbs,Fat");
-      f.close();
-    }
-  }
+  loadColorMapFromSD();
 }
+
+
 
 void FoodManager::loadDatabase() {
   if (!SD.exists(foodDBFileName)) {
@@ -88,14 +83,22 @@ void FoodManager::analyzeFoodLog() {
     String line = f.readStringUntil('\n');
     line.trim();
     if (line.isEmpty()) continue;
-    if (first && line.startsWith("DateTime")) { first = false; continue; }
+
+    if (first && line.startsWith("\"Timestamp") || line.startsWith("Timestamp")) {
+      first = false;
+      continue;
+    }
     first = false;
 
-    int start = 0, idx;
-    idx = line.indexOf(',', start); start = idx + 1;
-    idx = line.indexOf(',', start); start = idx + 1;
-    idx = line.indexOf(',', start);
-    String foodName = line.substring(start, idx);
+    // Parse columns safely (food is 2nd column)
+    int colStart = 0;
+    int colEnd = line.indexOf(',', colStart); // Timestamp
+    colStart = colEnd + 1;
+
+    colEnd = line.indexOf(',', colStart);     // Food
+    if (colEnd == -1) continue;
+
+    String foodName = line.substring(colStart, colEnd);
     foodName.trim();
 
     for (auto& item : foodDatabase) {
@@ -108,6 +111,7 @@ void FoodManager::analyzeFoodLog() {
   f.close();
   Serial.println("✅ Food usage counts updated");
 }
+
 
 void FoodManager::addFood(const String& name, float calories, float protein, float carbs, float fat) {
   File f = SD.open(foodDBFileName, FILE_APPEND);
@@ -130,6 +134,64 @@ void FoodManager::addFood(const String& name, float calories, float protein, flo
     0
   });
 }
+
+void FoodManager::loadColorMapFromSD() {
+  foodColorMap.clear();
+  const char* fileName = "/food_color_map.csv";
+
+  if (!SD.exists(fileName)) {
+      Serial.println("ℹ️ No food_color_map.csv found, skipping color map load.");
+      return;
+  }
+
+  File f = SD.open(fileName, FILE_READ);
+  if (!f) {
+      Serial.println("❌ Failed to open food_color_map.csv");
+      return;
+  }
+
+  bool first = true;
+  while (f.available()) {
+      String line = f.readStringUntil('\n');
+      line.trim();
+      if (line.isEmpty()) continue;
+      if (first && line.startsWith("Food")) { first = false; continue; }
+      first = false;
+
+      int commaIdx = line.indexOf(',');
+      if (commaIdx < 0) continue;
+
+      String food = line.substring(0, commaIdx);
+      String color = line.substring(commaIdx + 1);
+      food.trim(); color.trim();
+
+      if (!food.isEmpty() && !color.isEmpty()) {
+          foodColorMap[food] = color;
+      }
+  }
+
+  f.close();
+  Serial.printf("✅ Loaded %d food-color entries from SD\n", foodColorMap.size());
+}
+
+void FoodManager::saveColorMapToSD() {
+  const char* fileName = "/food_color_map.csv";
+
+  File f = SD.open(fileName, FILE_WRITE);
+  if (!f) {
+      Serial.println("❌ Failed to write food_color_map.csv");
+      return;
+  }
+
+  f.println("Food,Color");
+  for (const auto& pair : foodColorMap) {
+      f.println(pair.first + "," + pair.second);
+  }
+
+  f.close();
+  Serial.println("💾 Saved food_color_map.csv");
+}
+
 
 bool FoodManager::deleteFood(const String& target) {
   bool found = false;
