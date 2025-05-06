@@ -1,5 +1,6 @@
 #include "DisplayManager.h"
 #include <WiFi.h>  // For access to WiFi status and IP
+#include "WebServerManager.h"
 
 void DisplayManager::begin() {
     tft.begin();
@@ -10,7 +11,7 @@ void DisplayManager::begin() {
     tft.println("Smart Kitchen Scale");
 }
 
-void DisplayManager::updateDisplay(float weight, FoodItem* currentFood, DailyNutrition& totals, const String& ip) {
+void DisplayManager::updateDisplay(float weight, FoodItem* currentFood, DailyNutrition& totals, const String& ip, const String& mode) {
     tft.fillScreen(TFT_BLACK);
     tft.setCursor(0, 0);
     tft.setTextSize(2);
@@ -38,10 +39,13 @@ void DisplayManager::updateDisplay(float weight, FoodItem* currentFood, DailyNut
     // Draw IP at the bottom in small font, if connected
     if (!ip.isEmpty()) {
         tft.setTextSize(1);
-        tft.setTextColor(TFT_GREEN, TFT_BLACK);
-        tft.fillRect(0, tft.height() - 10, tft.width(), 10, TFT_BLACK);  // Clear the row
+        tft.setCursor(0, tft.height() - 20);
+        tft.print("Mode: ");
+        tft.print(mode);
+    
         tft.setCursor(0, tft.height() - 10);
         tft.print("IP: ");
         tft.print(ip);
     }
+        
 }

@@ -12,6 +12,15 @@ extern bool timeSynced;
 extern bool needDisplayUpdate;
 extern float weight;
 
+WiFiModeType WebServerManager::getCurrentMode() {
+  return currentMode;
+}
+
+IPAddress WebServerManager::getDeviceIP() {
+  return (currentMode == MODE_STA) ? WiFi.localIP() : WiFi.softAPIP();
+}
+
+
 void WebServerManager::begin(const char* ssid, const char* password) {
     startWiFi(ssid, password);
     server.on("/", HTTP_GET, [this]() {
@@ -45,6 +54,48 @@ server.on("/daily", HTTP_GET, [this]() {
         server.send(200, "application/json", json);
     });
 
+    server.on("/manifest.json", HTTP_GET, [this]() {
+      File f = SD.open("/manifest.json");
+      if (f) {
+          server.streamFile(f, "application/json");
+          f.close();
+      } else {
+          server.send(404, "text/plain", "manifest.json not found");
+      }
+  });
+  
+  server.on("/service-worker.js", HTTP_GET, [this]() {
+      File f = SD.open("/service-worker.js");
+      if (f) {
+          server.streamFile(f, "application/javascript");
+          f.close();
+      } else {
+          server.send(404, "text/plain", "service-worker.js not found");
+      }
+  });
+  
+  server.on("/icon-192.png", HTTP_GET, [this]() {
+      File f = SD.open("/icon-192.png");
+      if (f) {
+          server.streamFile(f, "image/png");
+          f.close();
+      } else {
+          server.send(404, "text/plain", "icon-192.png not found");
+      }
+  });
+  
+  server.on("/icon-512.png", HTTP_GET, [this]() {
+      File f = SD.open("/icon-512.png");
+      if (f) {
+          server.streamFile(f, "image/png");
+          f.close();
+      } else {
+          server.send(404, "text/plain", "icon-512.png not found");
+      }
+  });
+  
+  
+
     server.begin();
     Serial.println("🌐 HTTP Server started");
 }
@@ -64,25 +115,39 @@ bool WebServerManager::checkAuth() {
 
 
 void WebServerManager::startWiFi(const char* ssid, const char* password) {
-    WiFi.mode(WIFI_STA);
-    WiFi.begin(ssid, password);
-    Serial.print("Connecting to Wi-Fi");
-    unsigned long startAttemptTime = millis();
+  WiFi.mode(WIFI_AP_STA);
+  WiFi.begin(ssid, password);
+  Serial.print("Connecting to Wi-Fi");
 
-    while (WiFi.status() != WL_CONNECTED && millis() - startAttemptTime < 5000) {
-        delay(500);
-        Serial.print(".");
-    }
-    Serial.println();
+  unsigned long startAttemptTime = millis();
+  bool connected = false;
 
-    if (WiFi.status() == WL_CONNECTED) {
-        Serial.print("✅ Connected! IP: ");
-        Serial.println(WiFi.localIP());
-        syncTime();
-    } else {
-        Serial.println("⚠️ Failed to connect. Proceeding offline.");
-    }
+  while (millis() - startAttemptTime < 8000) {
+      if (WiFi.status() == WL_CONNECTED) {
+          connected = true;
+          break;
+      }
+      delay(500);
+      Serial.print(".");
+  }
+  Serial.println();
+
+  if (connected) {
+      Serial.print("✅ Connected! IP: ");
+      Serial.println(WiFi.localIP());
+      currentMode = MODE_STA;  // ✅ must be in scope
+      syncTime();
+  } else {
+      Serial.println("⚠️ Failed to connect. Starting AP mode...");
+      WiFi.setTxPower(WIFI_POWER_19_5dBm); // Max power
+WiFi.softAP("KitchenScale", "12345678", 6, 0, 1);  // Good channel, 1 client
+      Serial.print("📡 AP IP: ");
+      Serial.println(WiFi.softAPIP());
+      currentMode = MODE_AP;  // ✅ must be in scope
+  }
 }
+
+
 
 void WebServerManager::syncTime() {
     configTzTime("CET-1CEST,M3.5.0/2,M10.5.0/3", "pool.ntp.org");

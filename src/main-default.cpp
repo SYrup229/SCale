@@ -50,8 +50,9 @@ void loop() {
   }
 
   if (needDisplayUpdate) {
-    String ip = WiFi.status() == WL_CONNECTED ? WiFi.localIP().toString() : "";
-displayManager.updateDisplay(weight, currentFood, dailyTotals, ip);
+    String ip = webServerManager.getDeviceIP().toString();
+    String mode = webServerManager.getCurrentMode() == MODE_STA ? "STA" : "AP";
+    displayManager.updateDisplay(weight, currentFood, dailyTotals, ip, mode);       
     needDisplayUpdate = false;
   }
 
