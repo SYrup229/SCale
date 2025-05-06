@@ -50,7 +50,8 @@ void loop() {
   }
 
   if (needDisplayUpdate) {
-    displayManager.updateDisplay(weight, currentFood, dailyTotals);
+    String ip = WiFi.status() == WL_CONNECTED ? WiFi.localIP().toString() : "";
+displayManager.updateDisplay(weight, currentFood, dailyTotals, ip);
     needDisplayUpdate = false;
   }
 

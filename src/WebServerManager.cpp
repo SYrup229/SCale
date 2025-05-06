@@ -3,6 +3,7 @@
 #include "WebSocketManager.h"
 #include "ColorMap.h" 
 #include <SD.h>
+#include "Secrets.h"
 
 extern FoodManager foodManager;
 extern DailyNutrition dailyTotals;
@@ -13,12 +14,28 @@ extern float weight;
 
 void WebServerManager::begin(const char* ssid, const char* password) {
     startWiFi(ssid, password);
-    server.on("/", HTTP_GET, [this]() { handleRoot(); });
-    server.on("/addfood", HTTP_GET, [this]() { handleAddFood(); });
-    server.on("/deletefood", HTTP_GET, [this]() { handleDeleteFood(); });
-    server.on("/select", HTTP_GET, [this]() { handleSelect(); });
-    server.on("/reset", HTTP_GET, [this]() { handleReset(); });
-    server.on("/daily", HTTP_GET, [this]() {
+    server.on("/", HTTP_GET, [this]() {
+      if (!checkAuth()) return;
+      handleRoot();
+  });
+  server.on("/addfood", HTTP_GET, [this]() {
+    if (!checkAuth()) return;
+    handleAddFood();
+});
+server.on("/deletefood", HTTP_GET, [this]() {
+  if (!checkAuth()) return;
+  handleDeleteFood();
+});
+server.on("/select", HTTP_GET, [this]() {
+  if (!checkAuth()) return;
+  handleSelect();
+});
+server.on("/reset", HTTP_GET, [this]() {
+  if (!checkAuth()) return;
+  handleReset();
+});
+server.on("/daily", HTTP_GET, [this]() {
+  if (!checkAuth()) return;
         String json = "{";
         json += "\"calories\":" + String(dailyTotals.calories, 2) + ",";
         json += "\"protein\":" + String(dailyTotals.protein, 2) + ",";
@@ -35,6 +52,16 @@ void WebServerManager::begin(const char* ssid, const char* password) {
 void WebServerManager::handle() {
     server.handleClient();
 }
+
+bool WebServerManager::checkAuth() {
+  if (server.authenticate(AUTH_USER, AUTH_PASS)) {
+      return true;
+  }
+  server.requestAuthentication();  // Basic Auth
+  return false;
+}
+
+
 
 void WebServerManager::startWiFi(const char* ssid, const char* password) {
     WiFi.mode(WIFI_STA);

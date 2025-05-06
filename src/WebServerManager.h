@@ -24,4 +24,6 @@ private:
    
     void startWiFi(const char* ssid, const char* password);
     void syncTime();
+    bool checkAuth();
+
 };
