@@ -1,4 +1,5 @@
 #include "WebSocketManager.h"
+extern float lastGrams;
 
 void WebSocketManager::begin() {
     webSocket.begin();
@@ -14,13 +15,13 @@ void WebSocketManager::begin() {
 
 
 
-void WebSocketManager::handle(float weight) {
+void WebSocketManager::handle(float lastGrams) {
     webSocket.loop();
 
     // Broadcast weight every second
     if (millis() - lastSendTime > 1000) {
         lastSendTime = millis();
-        String payload = String(weight, 0);
+        String payload = String(lastGrams,0);
         webSocket.broadcastTXT(payload);
     }
 }
