@@ -3,13 +3,14 @@
 #include <WebServer.h>
 #include "FoodManager.h"
 #include "ColorMap.h"
+#include <sqlite3.h>
 
 // ✅ Define enum before the class so all scopes can see it
 enum WiFiModeType { MODE_STA, MODE_AP };
 
 class WebServerManager {
 public:
-    void begin(const char* ssid, const char* password);
+    void begin(const char* ssid, const char* password, sqlite3* database);
     void handle();
 
     // ✅ Add these accessors
@@ -23,6 +24,7 @@ private:
     WebServer server = WebServer(80);
     WiFiModeType currentMode = MODE_STA;  // ✅ Store mode
 
+    sqlite3* db = nullptr;
     void handleRoot();
     void handleAddFood();
     void handleDeleteFood();

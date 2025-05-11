@@ -2,6 +2,8 @@
 #include <WiFi.h>  // For access to WiFi status and IP
 #include "WebServerManager.h"
 
+extern FoodItem currentFood;  // In other files
+
 void DisplayManager::begin() {
     tft.begin();
     tft.setRotation(1);
@@ -14,13 +16,14 @@ void DisplayManager::begin() {
 void DisplayManager::updateDisplay(float weight, FoodItem* currentFood, DailyNutrition& totals, const String& ip, const String& mode) {
     tft.fillScreen(TFT_BLACK);
     tft.setCursor(0, 0);
-    tft.setTextSize(2);
+    tft.setTextSize(1);
 
     tft.println("Kitchen Scale");
     tft.printf("Wt: %.0f g\n\n", weight);
 
     if (currentFood) {
         float fct = weight / 100.0;
+        tft.setTextSize(2);
         tft.println(currentFood->name);
         tft.printf("Cal: %.0f  Prot: %.0f\n",
                    currentFood->calories * fct,
@@ -32,6 +35,7 @@ void DisplayManager::updateDisplay(float weight, FoodItem* currentFood, DailyNut
         tft.println("No selection\n");
     }
 
+    tft.setTextSize(2);
     tft.println("Daily Totals:");
     tft.printf("Cal: %.0f  Prot: %.0f\n", totals.calories, totals.protein);
     tft.printf("Carb: %.0f  Fat:  %.0f\n", totals.carbs, totals.fat);

@@ -3,36 +3,41 @@
 #include <Arduino.h>
 #include <vector>
 #include <map>
+#include <sqlite3.h>
 
 struct FoodItem {
-  String name;
-  float calories, protein, carbs, fat;
-  int addedOrder;
-  int usageCount;
+    int id;
+    String name;
+    float calories;   
+    float protein;
+    float carbs;
+    float fat;
+    int usageCount = 0;  // ✅ If analyzeFoodLog is still in use
 };
 
 struct DailyNutrition {
   float calories, protein, carbs, fat;
 };
 
+
 class FoodManager {
 public:
+DailyNutrition dailyTotals;
+sqlite3* getDatabaseHandle() { return db; }
 void begin(int sdCsPin);
   void loadDatabase();
-  void analyzeFoodLog();
   void addFood(const String& name, float calories, float protein, float carbs, float fat);
   bool deleteFood(const String& name);
   std::vector<FoodItem>& getDatabase();
 
-  // ✅ In-memory mapping of food name → color name
-  std::map<String, String> foodColorMap;
+void restoreDailyTotalsFromDatabase();
 
-  void loadColorMapFromSD();
-  void saveColorMapToSD();
+void loadColorMap();
+String getColorForFood(const String& name);
 
 
 private:
-  const char* foodDBFileName = "/food_db.csv";
-  const char* logFileName    = "/food_log.csv";
-  std::vector<FoodItem> foodDatabase;
+ std::vector<FoodItem> foodDatabase;
+    std::map<String, String> foodColorMap;
+    sqlite3* db = nullptr;  // ✅ DB handle here
 };

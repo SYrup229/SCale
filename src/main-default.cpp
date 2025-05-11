@@ -16,7 +16,12 @@ float weight = 1000.0;  // initial weight (simulate 1kg)
 bool timeSynced = false;
 bool needDisplayUpdate = true;
 DailyNutrition dailyTotals = {0, 0, 0, 0};
-FoodItem* currentFood = nullptr;
+FoodItem currentFood;
+
+
+float lastGrams = 0.0;
+String lastTimestamp = "";
+String lastMode = "";
 
 // Managers
 FoodManager foodManager;
@@ -33,7 +38,7 @@ void setup() {
   displayManager.begin();
   foodManager.begin(SD_CS);
   bleManager.begin();
-  webServerManager.begin(ssid, password);
+  webServerManager.begin(ssid, password, foodManager.getDatabaseHandle());
   webSocketManager.begin();
   foodManager.begin(SD_CS);
 
@@ -52,7 +57,7 @@ void loop() {
   if (needDisplayUpdate) {
     String ip = webServerManager.getDeviceIP().toString();
     String mode = webServerManager.getCurrentMode() == MODE_STA ? "STA" : "AP";
-    displayManager.updateDisplay(weight, currentFood, dailyTotals, ip, mode);       
+displayManager.updateDisplay(lastGrams, &currentFood, dailyTotals, ip, mode);
     needDisplayUpdate = false;
   }
 

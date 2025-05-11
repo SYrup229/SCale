@@ -7,7 +7,7 @@
 
 extern std::vector<FoodItem> foodDatabase;
 extern DailyNutrition dailyTotals;
-extern FoodItem* currentFood;
+extern FoodItem currentFood;
 extern float weight;
 extern bool needDisplayUpdate;
 
@@ -78,7 +78,7 @@ void BLEManager::processBLE() {
 
         for (auto& item : foodDatabase) {
             if (s.equalsIgnoreCase(item.name)) {
-                currentFood = &item;
+                currentFood = item;
                 float factor = weight / 100.0f;
                 dailyTotals.calories += item.calories * factor;
                 dailyTotals.protein  += item.protein  * factor;

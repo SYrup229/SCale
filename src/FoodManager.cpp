@@ -1,229 +1,206 @@
 #include "FoodManager.h"
 #include <SD.h>
 
-void FoodManager::begin(int sdCsPin) {
-  if (!SD.begin(sdCsPin)) {
-      Serial.println("❌ SD init failed");
-      return;
+#include <sqlite3.h>
+
+sqlite3* db;  // Add this at the top or as a class member
+sqlite3_stmt* stmt;
+extern DailyNutrition dailyTotals;
+extern FoodItem currentFood;
+
+void FoodManager::addFood(const String& name, float calories, float protein, float carbs, float fat) {
+    const char* sql = "INSERT INTO Food (name, calories, protein, carbs, fat) VALUES (?, ?, ?, ?, ?);";
+
+    if (sqlite3_prepare_v2(db, sql, -1, &stmt, nullptr) == SQLITE_OK) {
+        sqlite3_bind_text(stmt, 1, name.c_str(), -1, SQLITE_TRANSIENT);
+        sqlite3_bind_double(stmt, 2, calories);
+        sqlite3_bind_double(stmt, 3, protein);
+        sqlite3_bind_double(stmt, 4, carbs);
+        sqlite3_bind_double(stmt, 5, fat);
+
+        if (sqlite3_step(stmt) != SQLITE_DONE) {
+            Serial.println("❌ Failed to insert food item.");
+        } else {
+            Serial.println("✅ Food inserted into database.");
+        }
+
+        sqlite3_finalize(stmt);
+    } else {
+        Serial.printf("❌ Failed to prepare SQL insert: %s\n", sqlite3_errmsg(db));
+    }
   }
-  Serial.println("✅ SD initialized");
-  loadDatabase();
-  analyzeFoodLog();
-  loadColorMapFromSD();
+
+void FoodManager::begin(int sdCsPin) {
+    if (!SD.begin(sdCsPin)) {
+        Serial.println("❌ SD card init failed.");
+        return;
+    }
+
+    if (sqlite3_open("/sd/food.db", &db) != SQLITE_OK) {
+        Serial.println("❌ Cannot open SQLite database.");
+        return;
+    }
+
+    sqlite3_exec(db, "PRAGMA foreign_keys = ON;", nullptr, nullptr, nullptr);
+
+    const char* initSQL = R"(
+    PRAGMA foreign_keys = ON;
+
+    CREATE TABLE IF NOT EXISTS Food (
+        food_id INTEGER PRIMARY KEY AUTOINCREMENT,
+        name TEXT NOT NULL,
+        calories REAL,
+        protein REAL,
+        carbs REAL,
+        fat REAL
+    );
+
+    CREATE TABLE IF NOT EXISTS LogEntry (
+        log_id INTEGER PRIMARY KEY AUTOINCREMENT,
+        food_id INTEGER NOT NULL,
+        grams REAL NOT NULL,
+        timestamp TEXT NOT NULL,
+        FOREIGN KEY (food_id) REFERENCES Food(food_id) ON DELETE CASCADE
+    );
+
+    CREATE TABLE IF NOT EXISTS ColorMap (
+        food_id INTEGER PRIMARY KEY,
+        color_name TEXT,
+        FOREIGN KEY (food_id) REFERENCES Food(food_id) ON DELETE CASCADE
+    );
+)";
+
+    char* errMsg = nullptr;
+    if (sqlite3_exec(db, initSQL, nullptr, nullptr, &errMsg) != SQLITE_OK) {
+        Serial.printf("❌ SQL init error: %s\n", errMsg);
+        sqlite3_free(errMsg);
+    } else {
+        Serial.println("✅ SQLite schema initialized.");
+    }
+
+    restoreDailyTotalsFromDatabase();
+int count = 0;
+sqlite3_exec(db, "SELECT COUNT(*) FROM Food;", [](void* data, int argc, char** argv, char**) -> int {
+    if (argc > 0 && argv[0]) *(int*)data = atoi(argv[0]);
+    return 0;
+}, &count, nullptr);
+
+if (count == 0 && SD.exists("/food_db.csv")) {
+    Serial.println("⚙️ Importing old food_db.csv into SQLite...");
+    File f = SD.open("/food_db.csv");
+    while (f.available()) {
+        String line = f.readStringUntil('\n');
+        line.trim();
+        if (line.length() == 0 || line.startsWith("Name")) continue;
+
+        // Split CSV line
+        std::vector<String> parts;
+        while (line.length()) {
+            int idx = line.indexOf(',');
+            if (idx == -1) {
+                parts.push_back(line);
+                break;
+            }
+            parts.push_back(line.substring(0, idx));
+            line = line.substring(idx + 1);
+        }
+
+        if (parts.size() >= 5) {
+            const char* sql = "INSERT INTO Food (name, calories, protein, carbs, fat) VALUES (?, ?, ?, ?, ?);";
+            sqlite3_stmt* stmt;
+            if (sqlite3_prepare_v2(db, sql, -1, &stmt, nullptr) == SQLITE_OK) {
+                sqlite3_bind_text(stmt, 1, parts[0].c_str(), -1, SQLITE_TRANSIENT);
+                sqlite3_bind_double(stmt, 2, parts[1].toFloat());
+                sqlite3_bind_double(stmt, 3, parts[2].toFloat());
+                sqlite3_bind_double(stmt, 4, parts[3].toFloat());
+                sqlite3_bind_double(stmt, 5, parts[4].toFloat());
+                if (sqlite3_step(stmt) == SQLITE_DONE) {
+                    Serial.printf("✅ Imported: %s\n", parts[0].c_str());
+                } else {
+                    Serial.printf("❌ Insert failed: %s\n", sqlite3_errmsg(db));
+                }
+                sqlite3_finalize(stmt);
+            }
+        }
+    }
+    f.close();
+}
+
+}
+
+void FoodManager::restoreDailyTotalsFromDatabase() {
+    if (!db) return;
+
+    const char* query = "SELECT SUM(calories), SUM(protein), SUM(carbs), SUM(fat) FROM LogEntry;";
+    sqlite3_stmt* stmt;
+
+    if (sqlite3_prepare_v2(db, query, -1, &stmt, nullptr) == SQLITE_OK) {
+        if (sqlite3_step(stmt) == SQLITE_ROW) {
+            dailyTotals.calories = sqlite3_column_double(stmt, 0);
+            dailyTotals.protein  = sqlite3_column_double(stmt, 1);
+            dailyTotals.carbs    = sqlite3_column_double(stmt, 2);
+            dailyTotals.fat      = sqlite3_column_double(stmt, 3);
+            Serial.println("✅ Restored daily totals from DB");
+        } else {
+            Serial.println("⚠️ No daily log data found");
+        }
+        sqlite3_finalize(stmt);
+    } else {
+        Serial.printf("❌ Failed to restore totals: %s\n", sqlite3_errmsg(db));
+    }
 }
 
 
 
 void FoodManager::loadDatabase() {
-  if (!SD.exists(foodDBFileName)) {
-    Serial.println("⚠️ food_db.csv missing");
-    return;
-  }
+    foodDatabase.clear();
 
-  File f = SD.open(foodDBFileName, FILE_READ);
-  if (!f) {
-    Serial.println("⚠️ Cannot open food_db.csv");
-    return;
-  }
+    const char* selectSQL = "SELECT food_id, name, calories, protein, carbs, fat FROM Food;";
+    sqlite3_stmt* stmt;
 
-  foodDatabase.clear();
-  bool first = true;
-  int order = 0;
-  Serial.println("Loading food database...");
-  while (f.available()) {
-    String line = f.readStringUntil('\n');
-    line.trim();
-    if (line.isEmpty()) continue;
-    if (first && line.startsWith("Name")) { first = false; continue; }
-    first = false;
-
-    int start = 0, idx;
-    std::vector<String> cols;
-    for (int i = 0; i < 4; ++i) {
-      idx = line.indexOf(',', start);
-      if (idx == -1) break;
-      cols.push_back(line.substring(start, idx));
-      start = idx + 1;
-    }
-    cols.push_back(line.substring(start));
-    
-    if (cols.size() < 5) continue;
-
-    foodDatabase.push_back({
-      cols[0],
-      cols[1].toFloat(),
-      cols[2].toFloat(),
-      cols[3].toFloat(),
-      cols[4].toFloat(),
-      order++,  // addedOrder
-      0         // usageCount (to be filled later)
-    });
-    Serial.println(" • " + cols[0]);
-  }
-  f.close();
-  Serial.printf("✅ %d items loaded\n", (int)foodDatabase.size());
-}
-
-
-
-void FoodManager::analyzeFoodLog() {
-  if (!SD.exists(logFileName)) {
-    Serial.println("⚠️ No food_log.csv yet, skipping usage analysis");
-    return;
-  }
-
-  File f = SD.open(logFileName, FILE_READ);
-  if (!f) {
-    Serial.println("⚠️ Cannot open food_log.csv");
-    return;
-  }
-
-  bool first = true;
-  while (f.available()) {
-    String line = f.readStringUntil('\n');
-    line.trim();
-    if (line.isEmpty()) continue;
-
-    if (first && line.startsWith("\"Timestamp") || line.startsWith("Timestamp")) {
-      first = false;
-      continue;
-    }
-    first = false;
-
-    // Parse columns safely (food is 2nd column)
-    int colStart = 0;
-    int colEnd = line.indexOf(',', colStart); // Timestamp
-    colStart = colEnd + 1;
-
-    colEnd = line.indexOf(',', colStart);     // Food
-    if (colEnd == -1) continue;
-
-    String foodName = line.substring(colStart, colEnd);
-    foodName.trim();
-
-    for (auto& item : foodDatabase) {
-      if (item.name.equalsIgnoreCase(foodName)) {
-        item.usageCount++;
-        break;
-      }
-    }
-  }
-  f.close();
-  Serial.println("✅ Food usage counts updated");
-}
-
-
-void FoodManager::addFood(const String& name, float calories, float protein, float carbs, float fat) {
-  File f = SD.open(foodDBFileName, FILE_APPEND);
-  if (!f) {
-    Serial.println("❌ Failed to open food_db.csv for appending");
-    return;
-  }
-
-  f.println(name + "," + String(calories, 2) + "," + String(protein, 2) + "," +
-            String(carbs, 2) + "," + String(fat, 2));
-  f.close();
-
-  foodDatabase.push_back({
-    name,
-    calories,
-    protein,
-    carbs,
-    fat,
-    (int)foodDatabase.size(),  // next order
-    0
-  });
-}
-
-void FoodManager::loadColorMapFromSD() {
-  foodColorMap.clear();
-  const char* fileName = "/food_color_map.csv";
-
-  if (!SD.exists(fileName)) {
-      Serial.println("ℹ️ No food_color_map.csv found, skipping color map load.");
-      return;
-  }
-
-  File f = SD.open(fileName, FILE_READ);
-  if (!f) {
-      Serial.println("❌ Failed to open food_color_map.csv");
-      return;
-  }
-
-  bool first = true;
-  while (f.available()) {
-      String line = f.readStringUntil('\n');
-      line.trim();
-      if (line.isEmpty()) continue;
-      if (first && line.startsWith("Food")) { first = false; continue; }
-      first = false;
-
-      int commaIdx = line.indexOf(',');
-      if (commaIdx < 0) continue;
-
-      String food = line.substring(0, commaIdx);
-      String color = line.substring(commaIdx + 1);
-      food.trim(); color.trim();
-
-      if (!food.isEmpty() && !color.isEmpty()) {
-          foodColorMap[food] = color;
-      }
-  }
-
-  f.close();
-  Serial.printf("✅ Loaded %d food-color entries from SD\n", foodColorMap.size());
-}
-
-void FoodManager::saveColorMapToSD() {
-  const char* fileName = "/food_color_map.csv";
-
-  File f = SD.open(fileName, FILE_WRITE);
-  if (!f) {
-      Serial.println("❌ Failed to write food_color_map.csv");
-      return;
-  }
-
-  f.println("Food,Color");
-  for (const auto& pair : foodColorMap) {
-      f.println(pair.first + "," + pair.second);
-  }
-
-  f.close();
-  Serial.println("💾 Saved food_color_map.csv");
-}
-
-
-bool FoodManager::deleteFood(const String& target) {
-  bool found = false;
-  std::vector<FoodItem> newDB;
-  for (auto& item : foodDatabase) {
-    if (!item.name.equalsIgnoreCase(target)) {
-      newDB.push_back(item);
+    if (sqlite3_prepare_v2(db, selectSQL, -1, &stmt, nullptr) == SQLITE_OK) {
+        while (sqlite3_step(stmt) == SQLITE_ROW) {
+            FoodItem item;
+            item.id      = sqlite3_column_int(stmt, 0);
+            item.name    = String(reinterpret_cast<const char*>(sqlite3_column_text(stmt, 1)));
+            item.calories = sqlite3_column_double(stmt, 2);
+            item.protein = sqlite3_column_double(stmt, 3);
+            item.carbs   = sqlite3_column_double(stmt, 4);
+            item.fat     = sqlite3_column_double(stmt, 5);
+            foodDatabase.push_back(item);
+        }
+        sqlite3_finalize(stmt);
+        Serial.printf("✅ Loaded %d food items from database.\n", foodDatabase.size());
     } else {
-      found = true;
+        Serial.println("❌ Failed to prepare SELECT in loadDatabase()");
     }
-  }
-
-  if (!found) return false;
-
-  File f = SD.open(foodDBFileName, FILE_WRITE);
-  if (!f) {
-    Serial.println("❌ Failed to rewrite food_db.csv");
-    return false;
-  }
-
-  f.println("Name,Calories,Protein,Carbs,Fat");
-  for (auto& item : newDB) {
-    f.println(item.name + "," + String(item.calories, 2) + "," +
-              String(item.protein, 2) + "," +
-              String(item.carbs, 2) + "," +
-              String(item.fat, 2));
-  }
-  f.close();
-
-  foodDatabase = newDB;
-  return true;
 }
+
+
+std::map<String, String> foodColorMap;
+
+void FoodManager::loadColorMap() {
+    foodColorMap.clear();
+
+    const char* query = R"(SELECT Food.name, ColorMap.color_name
+                           FROM ColorMap
+                           JOIN Food ON Food.food_id = ColorMap.food_id;)";
+
+    sqlite3_stmt* stmt;
+    if (sqlite3_prepare_v2(db, query, -1, &stmt, nullptr) == SQLITE_OK) {
+        while (sqlite3_step(stmt) == SQLITE_ROW) {
+            String foodName = String(reinterpret_cast<const char*>(sqlite3_column_text(stmt, 0)));
+            String color = String(reinterpret_cast<const char*>(sqlite3_column_text(stmt, 1)));
+            foodColorMap[foodName] = color;
+        }
+        sqlite3_finalize(stmt);
+        Serial.printf("✅ Loaded %d food-color mappings.\n", foodColorMap.size());
+    } else {
+        Serial.println("❌ Failed to load color map from SQL.");
+    }
+}
+
+
 
 std::vector<FoodItem>& FoodManager::getDatabase() {
   return foodDatabase;
