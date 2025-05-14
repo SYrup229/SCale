@@ -5,10 +5,11 @@
 #include "WebServerManager.h"
 #include "WebSocketManager.h"
 #include "Utils.h"
+#include "Scale_LoadCell.h"
 
 // Wi-Fi credentials
-const char* ssid = "Mihaita";
-const char* password = "ciolan229";
+const char* ssid = "Ziggo2475581";
+const char* password = "9gtyxApcjbh7pkcm";
 const int SD_CS = 10;
 
 // Globals
@@ -47,7 +48,7 @@ void setup() {
 
 void loop() {
   webServerManager.handle();
-  webSocketManager.handle(weight);
+  webSocketManager.handle(scale_getWeight());
 
   if (!timeSynced && time(nullptr) > 24 * 3600) {
     Serial.println("✅ Time synchronized!");
