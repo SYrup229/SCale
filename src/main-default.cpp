@@ -43,12 +43,15 @@ void setup() {
   webSocketManager.begin();
   foodManager.begin(SD_CS);
 
+  scale_setup();
   resetDailyTotals();
 }
 
 void loop() {
+
+  //weight = scale_getWeight();
   webServerManager.handle();
-  webSocketManager.handle(scale_getWeight());
+  webSocketManager.handle(std::abs(scale_getWeight()));
 
   if (!timeSynced && time(nullptr) > 24 * 3600) {
     Serial.println("✅ Time synchronized!");
