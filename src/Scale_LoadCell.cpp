@@ -12,6 +12,11 @@ void scale_setup(const float calibration_factor) {
   scale.set_scale(calibration_factor);
 }
 
+void scale_tare() {
+
+  scale.tare();
+}
+
 float scale_getWeight() {
 
   float weight = scale.get_units(10);

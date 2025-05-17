@@ -8,12 +8,13 @@
 #include "Scale_LoadCell.h"
 
 // Wi-Fi credentials
-const char* ssid = "Ziggo2475581";
-const char* password = "9gtyxApcjbh7pkcm";
+const char* ssid = "TP-Link_D358";
+const char* password = "25194432";
 const int SD_CS = 10;
 
 // Globals
 float weight = 1000.0;  // initial weight (simulate 1kg)
+bool tareScale = false;
 bool timeSynced = false;
 bool needDisplayUpdate = true;
 DailyNutrition dailyTotals = {0, 0, 0, 0};
@@ -49,9 +50,8 @@ void setup() {
 
 void loop() {
 
-  //weight = scale_getWeight();
   webServerManager.handle();
-  webSocketManager.handle(std::abs(scale_getWeight()));
+  webSocketManager.handle(scale_getWeight(), tareScale);
 
   if (!timeSynced && time(nullptr) > 24 * 3600) {
     Serial.println("✅ Time synchronized!");
@@ -61,7 +61,7 @@ void loop() {
   if (needDisplayUpdate) {
     String ip = webServerManager.getDeviceIP().toString();
     String mode = webServerManager.getCurrentMode() == MODE_STA ? "STA" : "AP";
-displayManager.updateDisplay(lastGrams, &currentFood, dailyTotals, ip, mode);
+    displayManager.updateDisplay(lastGrams, &currentFood, dailyTotals, ip, mode);
     needDisplayUpdate = false;
   }
 

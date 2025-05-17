@@ -6,7 +6,7 @@
 class WebSocketManager {
 public:
     void begin();
-    void handle(float weight);
+    void handle(float weight, bool& tareScale);
 
 private:
     WebSocketsServer webSocket = WebSocketsServer(81);

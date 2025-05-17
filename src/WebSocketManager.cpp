@@ -1,5 +1,7 @@
 #include "WebSocketManager.h"
+#include "Scale_LoadCell.h"
 extern float lastGrams;
+extern bool tareScale;
 
 void WebSocketManager::begin() {
     webSocket.begin();
@@ -8,6 +10,12 @@ void WebSocketManager::begin() {
             Serial.printf("[WebSocket] Client %u Connected\n", num);
         } else if (type == WStype_DISCONNECTED) {
             Serial.printf("[WebSocket] Client %u Disconnected\n", num);
+        } else if (type == WStype_TEXT) {
+            String msg((char*)payload, length);
+            if (msg == "tare") {
+                tareScale = true;
+                Serial.println("🟡 Tare command received");
+            }
         }
     });
     Serial.println("🌐 WebSocket Server started on port 81");
@@ -15,13 +23,20 @@ void WebSocketManager::begin() {
 
 
 
-void WebSocketManager::handle(float lastGrams) {
+void WebSocketManager::handle(float lastGrams, bool& tareScale) {
     webSocket.loop();
 
     // Broadcast weight every second
-    if (millis() - lastSendTime > 1000) {
+    if (millis() - lastSendTime > 250) {
         lastSendTime = millis();
         String payload = String(lastGrams,0);
         webSocket.broadcastTXT(payload);
+    }
+
+    // Handle tare scale command
+    if (tareScale) {
+
+        scale_tare();
+        tareScale = false;
     }
 }

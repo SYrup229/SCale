@@ -9,6 +9,9 @@
 // Initialize & tare the HX711, optionally override default calibration factor
 void scale_setup(const float calibration_factor = 391);
 
+// Tare the scale
+void scale_tare();
+
 // Read the current weight in grams
 float scale_getWeight();
 

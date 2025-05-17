@@ -411,6 +411,7 @@ void WebServerManager::handleRoot() {
 <body>
   <h1>Smart Kitchen Scale</h1>
   <h2>Current Weight: <span id='liveWeight'>0g</span></h2>
+  <button id="tareBtn">Tare Scale</button>
 
   <div class='controls'>
     <select id='sortSelect' onchange='sortFoods()'>
@@ -447,6 +448,10 @@ void WebServerManager::handleRoot() {
   <script>
     var foods = [];
     var ws, macroChart;
+
+    window.addEventListener("load", () => {
+      document.getElementById('tareBtn').onclick = () => ws.send("tare");
+    });
 
     function startWebSocket() {
       ws = new WebSocket('ws://' + location.hostname + ':81');

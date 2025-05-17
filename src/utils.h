@@ -12,9 +12,9 @@ extern String lastMode; // optional, if used in display
 inline void resetDailyTotals() {
     dailyTotals = {0, 0, 0, 0};
     currentFood.name = "";
-currentFood.calories = 0;
-currentFood.protein = 0;
-currentFood.carbs = 0;
-currentFood.fat = 0;
+    currentFood.calories = 0;
+    currentFood.protein = 0;
+    currentFood.carbs = 0;
+    currentFood.fat = 0;
     needDisplayUpdate = true;
 }
