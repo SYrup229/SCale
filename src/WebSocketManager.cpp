@@ -1,6 +1,6 @@
 #include "WebSocketManager.h"
 #include "Scale_LoadCell.h"
-extern float lastGrams;
+extern float weight;
 extern bool tareScale;
 
 void WebSocketManager::begin() {
@@ -23,13 +23,13 @@ void WebSocketManager::begin() {
 
 
 
-void WebSocketManager::handle(float lastGrams, bool& tareScale) {
+void WebSocketManager::handle(float weight, bool& tareScale) {
     webSocket.loop();
 
     // Broadcast weight every second
     if (millis() - lastSendTime > 250) {
         lastSendTime = millis();
-        String payload = String(lastGrams,0);
+        String payload = String(weight, 0);
         webSocket.broadcastTXT(payload);
     }
 

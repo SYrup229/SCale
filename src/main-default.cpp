@@ -21,7 +21,6 @@ DailyNutrition dailyTotals = {0, 0, 0, 0};
 FoodItem currentFood;
 
 
-float lastGrams = 0.0;
 String lastTimestamp = "";
 String lastMode = "";
 
@@ -50,8 +49,10 @@ void setup() {
 
 void loop() {
 
+  weight = scale_getWeight();
+
   webServerManager.handle();
-  webSocketManager.handle(scale_getWeight(), tareScale);
+  webSocketManager.handle(weight, tareScale);
 
   if (!timeSynced && time(nullptr) > 24 * 3600) {
     Serial.println("✅ Time synchronized!");
@@ -61,7 +62,7 @@ void loop() {
   if (needDisplayUpdate) {
     String ip = webServerManager.getDeviceIP().toString();
     String mode = webServerManager.getCurrentMode() == MODE_STA ? "STA" : "AP";
-    displayManager.updateDisplay(lastGrams, &currentFood, dailyTotals, ip, mode);
+    displayManager.updateDisplay(weight, &currentFood, dailyTotals, ip, mode);
     needDisplayUpdate = false;
   }
 

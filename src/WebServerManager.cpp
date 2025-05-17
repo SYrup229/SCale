@@ -14,7 +14,6 @@ extern bool timeSynced;
 extern bool needDisplayUpdate;
 extern float weight;
 extern DisplayManager displayManager;
-extern float lastGrams;
 extern String lastTimestamp;
 extern String lastMode; // optional, if used in display
 
@@ -234,14 +233,14 @@ void WebServerManager::syncTime() {
     Serial.println("🔄 NTP time sync requested.");
 }
 
-void WebServerManager::logSpectrumEntry(const String& foodName, float grams, const String& color, const Spectrum& spectrum) {
+void WebServerManager::logSpectrumEntry(const String& foodName, float weight, const String& color, const Spectrum& spectrum) {
     const char* fileName = "/spectrum_log.csv";
 
     // Create CSV if needed
     if (!SD.exists(fileName)) {
         File init = SD.open(fileName, FILE_WRITE);
         if (init) {
-            init.print("Food,Grams,Color");
+            init.print("Food,Weight,Color");
             for (int i = 0; i < 10; ++i) init.printf(",Spec%d", i);
             init.println();
             init.close();
@@ -252,7 +251,7 @@ void WebServerManager::logSpectrumEntry(const String& foodName, float grams, con
     File file = SD.open(fileName, FILE_APPEND);
     if (file) {
         file.print(foodName); file.print(",");
-        file.print(grams, 1); file.print(",");
+        file.print(weight, 1); file.print(",");
         file.print(color);
         for (int i = 0; i < 10; ++i) {
             file.print(","); file.print(spectrum[i]);
@@ -272,17 +271,16 @@ String FoodManager::getColorForFood(const String& foodName) {
 
 
 void WebServerManager::handleSelect() {
-    if (!server.hasArg("food") || !server.hasArg("grams") || !server.hasArg("color")) {
+    if (!server.hasArg("food") || !server.hasArg("color")) {
         server.send(400, "text/plain", "Missing parameters");
         return;
     }
 
     String foodName = server.arg("food");
-    float grams = server.arg("grams").toFloat();
     String colorName = server.arg("color");
 
-    if (grams <= 0) {
-        server.send(400, "text/plain", "Invalid grams");
+    if (weight <= 0) {
+        server.send(400, "text/plain", "Invalid weight");
         return;
     }
 
@@ -298,79 +296,74 @@ void WebServerManager::handleSelect() {
     sqlite3_bind_text(stmt, 1, foodName.c_str(), -1, SQLITE_TRANSIENT);
 
     if (sqlite3_step(stmt) == SQLITE_ROW) {
-        int food_id      = sqlite3_column_int(stmt, 0);
-        float kcal       = sqlite3_column_double(stmt, 1);
-        float prot       = sqlite3_column_double(stmt, 2);
-        float carbs      = sqlite3_column_double(stmt, 3);
-        float fat        = sqlite3_column_double(stmt, 4);
-        sqlite3_finalize(stmt);
+      int food_id      = sqlite3_column_int(stmt, 0);
+      float kcal       = sqlite3_column_double(stmt, 1);
+      float prot       = sqlite3_column_double(stmt, 2);
+      float carbs      = sqlite3_column_double(stmt, 3);
+      float fat        = sqlite3_column_double(stmt, 4);
+      sqlite3_finalize(stmt);
 
-        float factor = grams / 100.0;
-        float cal = kcal * factor;
-        float p   = prot * factor;
-        float c   = carbs * factor;
-        float f   = fat * factor;
+      float factor = weight / 100.0;
+      float cal = kcal * factor;
+      float p   = prot * factor;
+      float c   = carbs * factor;
+      float f   = fat * factor;
 
-        // Update in-memory daily totals
-        dailyTotals.calories += cal;
-        dailyTotals.protein  += p;
-        dailyTotals.carbs    += c;
-        dailyTotals.fat      += f;
+      // Update in-memory daily totals
+      dailyTotals.calories += cal;
+      dailyTotals.protein  += p;
+      dailyTotals.carbs    += c;
+      dailyTotals.fat      += f;
 
-        // Timestamp
-        String timestamp = "offline";
-        if (timeSynced && WiFi.status() == WL_CONNECTED) {
-            time_t now = time(nullptr);
-            struct tm tm;
-            localtime_r(&now, &tm);
-            char buf[25];
-            strftime(buf, sizeof(buf), "%Y-%m-%d %H:%M:%S", &tm);
-            timestamp = buf;
-        }
+      // Timestamp
+      String timestamp = "offline";
+      if (timeSynced && WiFi.status() == WL_CONNECTED) {
+          time_t now = time(nullptr);
+          struct tm tm;
+          localtime_r(&now, &tm);
+          char buf[25];
+          strftime(buf, sizeof(buf), "%Y-%m-%d %H:%M:%S", &tm);
+          timestamp = buf;
+      }
 
-        // Insert into LogEntry
-        const char* insertSQL = "INSERT INTO LogEntry (timestamp, food_id, grams, calories, protein, carbs, fat) VALUES (?, ?, ?, ?, ?, ?, ?)";
-        sqlite3_stmt* logStmt;
-        if (sqlite3_prepare_v2(db, insertSQL, -1, &logStmt, nullptr) == SQLITE_OK) {
-            sqlite3_bind_text(logStmt, 1, timestamp.c_str(), -1, SQLITE_TRANSIENT);
-            sqlite3_bind_int(logStmt, 2, food_id);
-            sqlite3_bind_double(logStmt, 3, grams);
-            sqlite3_bind_double(logStmt, 4, cal);
-            sqlite3_bind_double(logStmt, 5, p);
-            sqlite3_bind_double(logStmt, 6, c);
-            sqlite3_bind_double(logStmt, 7, f);
-            sqlite3_step(logStmt);
-            sqlite3_finalize(logStmt);
-        }
+      // Insert into LogEntry
+      const char* insertSQL = "INSERT INTO LogEntry (timestamp, food_id, grams, calories, protein, carbs, fat) VALUES (?, ?, ?, ?, ?, ?, ?)";
+      sqlite3_stmt* logStmt;
+      if (sqlite3_prepare_v2(db, insertSQL, -1, &logStmt, nullptr) == SQLITE_OK) {
+          sqlite3_bind_text(logStmt, 1, timestamp.c_str(), -1, SQLITE_TRANSIENT);
+          sqlite3_bind_int(logStmt, 2, food_id);
+          sqlite3_bind_double(logStmt, 3, weight);
+          sqlite3_bind_double(logStmt, 4, cal);
+          sqlite3_bind_double(logStmt, 5, p);
+          sqlite3_bind_double(logStmt, 6, c);
+          sqlite3_bind_double(logStmt, 7, f);
+          sqlite3_step(logStmt);
+          sqlite3_finalize(logStmt);
+      }
 
-        // Update ColorMap
-        const char* colorSQL = "REPLACE INTO ColorMap (food_id, color_name) VALUES (?, ?)";
-        sqlite3_stmt* colorStmt;
-        if (sqlite3_prepare_v2(db, colorSQL, -1, &colorStmt, nullptr) == SQLITE_OK) {
-            sqlite3_bind_int(colorStmt, 1, food_id);
-            sqlite3_bind_text(colorStmt, 2, colorName.c_str(), -1, SQLITE_TRANSIENT);
-            sqlite3_step(colorStmt);
-            sqlite3_finalize(colorStmt);
-        }
+      // Update ColorMap
+      const char* colorSQL = "REPLACE INTO ColorMap (food_id, color_name) VALUES (?, ?)";
+      sqlite3_stmt* colorStmt;
+      if (sqlite3_prepare_v2(db, colorSQL, -1, &colorStmt, nullptr) == SQLITE_OK) {
+          sqlite3_bind_int(colorStmt, 1, food_id);
+          sqlite3_bind_text(colorStmt, 2, colorName.c_str(), -1, SQLITE_TRANSIENT);
+          sqlite3_step(colorStmt);
+          sqlite3_finalize(colorStmt);
+      }
 
-        // Update Display
-currentFood.name     = foodName;
-currentFood.calories = kcal;
-currentFood.protein  = prot;
-currentFood.carbs    = carbs;
-currentFood.fat      = fat;
+      // Update Display
+      currentFood.name     = foodName;
+      currentFood.calories = kcal;
+      currentFood.protein  = prot;
+      currentFood.carbs    = carbs;
+      currentFood.fat      = fat;
 
-lastGrams = grams;          // 🟡 Save for display
-lastTimestamp = timestamp;  // 🟡 Save for display
+      lastTimestamp = timestamp;  // 🟡 Save for display
 
-displayManager.updateDisplay(grams, &currentFood, dailyTotals, timestamp, colorName);
+      displayManager.updateDisplay(weight, &currentFood, dailyTotals, timestamp, colorName);
 
-
-
-
-        server.send(200, "text/plain", "✅ Logged " + String(grams) + "g of " + foodName);
-        needDisplayUpdate = true;
-
+      server.send(200, "text/plain", "✅ Logged " + String(weight) + "g of " + foodName);
+      needDisplayUpdate = true;
     } else {
         sqlite3_finalize(stmt);
         server.send(404, "text/plain", "❌ Food not found");
@@ -510,13 +503,21 @@ void WebServerManager::handleRoot() {
     }
 
     function logFood(foodObj) {
-      let grams = prompt('How many grams of ' + foodObj.name + '?');
-      if (!grams || isNaN(grams) || grams <= 0) return;
-
+      const text = document.getElementById('liveWeight').innerText;
+      const grams = parseFloat(text);
+      
+      if (isNaN(grams)) {
+        alert('Invalid weight.');
+        return;
+      }
+      
       let color = foodObj.color || prompt('What color is the food (e.g. red, green)?');
       if (!color) return;
 
-      fetch(`/select?food=${encodeURIComponent(foodObj.name)}&grams=${grams}&color=${encodeURIComponent(color.toLowerCase())}`)
+      fetch(
+        `/select?food=${encodeURIComponent(foodObj.name)}` +
+        `&grams=${grams}` +
+        `&color=${encodeURIComponent(color.toLowerCase())}`)
         .then(r => r.text())
         .then(t => {
           document.getElementById('status').innerText = t;
