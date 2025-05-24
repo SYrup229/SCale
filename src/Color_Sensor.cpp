@@ -1,45 +1,65 @@
 #include "Color_Sensor.h"
-#include <Adafruit_AS7341.h>
 
-static Adafruit_AS7341 _as7341;   // one sensor, one global—simple life
-
-bool AS7341ColorSensor::begin(TwoWire &bus, uint8_t addr)
+/* ---------- PUBLIC API ---------- */
+bool initSpectralSensor(DFRobot_AS7341 &sensor,
+                        uint8_t again,
+                        uint8_t atime,
+                        uint16_t astep,
+                        uint8_t wtime)
 {
-    _bus  = &bus;
-    _addr = addr;
-    _bus->begin();                       // kick the bus
+  if (sensor.begin(DFRobot_AS7341::eSpm) != 0)
+    return false;
 
-    // wake the silicon
-    return _as7341.begin(addr, _bus);
+  sensor.setAGAIN(again);
+  sensor.setAtime(atime);
+  sensor.setAstep(astep);
+  sensor.setWtime(wtime);
+  return true;
 }
 
-void AS7341ColorSensor::readChannels()
-{
-    _as7341.readAllChannels(_channels);
-}
+bool captureSpectrum(DFRobot_AS7341 &sensor, spectralColor &out, colorSensorState &state) {
 
-uint16_t AS7341ColorSensor::getRawChannel(uint8_t index) const
-{
-    return (index < 10) ? _channels[index] : 0;
-}
+  /* First SMUX group: F1-F4 + Clear + NIR */
+  if (state == INACTIVE) {
 
-String AS7341ColorSensor::classify() const
-{
-    // Simple but surprisingly useful primary-colour detector.
-    uint16_t red   = _channels[2] + _channels[3]; // 610–670 nm
-    uint16_t green = _channels[4] + _channels[5]; // 510–570 nm
-    uint16_t blue  = _channels[0] + _channels[1]; // 405–500 nm
+    sensor.startMeasure(DFRobot_AS7341::eF1F4ClearNIR);
+    state = ACTIVE1;
+    return false;
 
-    if (red > green && red > blue)
-        return (green > blue) ? "Yellow" : "Red";
-    if (green > red && green > blue)
-        return "Green";
-    if (blue > red && blue > green)
-        return "Blue";
-    return "Unknown";
-}
+  } else if (state == ACTIVE1) {
 
-String AS7341ColorSensor::getColor() const
-{
-    return classify();
+    if (sensor.measureComplete()) {
+        auto g1 = sensor.readSpectralDataOne();
+        out.f[0] = g1.ADF1;  out.f[1] = g1.ADF2;  out.f[2] = g1.ADF3;  out.f[3] = g1.ADF4;
+        out.f[8] = g1.ADCLEAR;   // Clear (no-filter)
+        out.f[9] = g1.ADNIR;     // Near-IR
+
+        sensor.startMeasure(DFRobot_AS7341::eF5F8ClearNIR);
+        state = ACTIVE2;
+    }
+
+    return false;
+    
+  } else if (state == ACTIVE2) {
+
+    if (sensor.measureComplete()) {
+        auto g2 = sensor.readSpectralDataTwo();
+        out.f[4] = g2.ADF5;  out.f[5] = g2.ADF6;  out.f[6] = g2.ADF7;  out.f[7] = g2.ADF8;
+
+        /* Average the duplicate Clear/NIR measurements for stability */
+        out.f[8] = uint16_t((uint32_t(out.f[8]) + g2.ADCLEAR) / 2);
+        out.f[9] = uint16_t((uint32_t(out.f[9]) + g2.ADNIR)   / 2);
+
+        state = INACTIVE;  // Reset state for next capture
+        return true;       // Spectrum capture complete
+    }
+  } else {
+
+    Serial.println("Invalid state in captureSpectrum()");
+
+    // Invalid state, reset to INACTIVE
+    state = INACTIVE;
+  }
+
+  return false;  // No valid capture  
 }

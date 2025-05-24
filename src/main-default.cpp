@@ -6,6 +6,7 @@
 #include "WebSocketManager.h"
 #include "Utils.h"
 #include "Scale_LoadCell.h"
+#include "Color_Sensor.h"
 
 // Wi-Fi credentials
 const char* ssid = "TP-Link_D358";
@@ -20,6 +21,9 @@ bool needDisplayUpdate = true;
 DailyNutrition dailyTotals = {0, 0, 0, 0};
 FoodItem currentFood;
 
+// Color sensor
+DFRobot_AS7341 colorSensor;
+colorSensorState colorState = INACTIVE;
 
 String lastTimestamp = "";
 String lastMode = "";
@@ -42,6 +46,8 @@ void setup() {
   webServerManager.begin(ssid, password, foodManager.getDatabaseHandle());
   webSocketManager.begin();
   foodManager.begin(SD_CS);
+
+  initSpectralSensor(colorSensor);
 
   scale_setup();
   resetDailyTotals();

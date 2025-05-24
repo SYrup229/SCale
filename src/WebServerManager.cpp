@@ -637,10 +637,10 @@ void WebServerManager::handleRoot() {
 void WebServerManager::handleReset() {
     dailyTotals = {0, 0, 0, 0};
     currentFood.name = "";
-currentFood.calories = 0;
-currentFood.protein = 0;
-currentFood.carbs = 0;
-currentFood.fat = 0;
+    currentFood.calories = 0;
+    currentFood.protein = 0;
+    currentFood.carbs = 0;
+    currentFood.fat = 0;
     needDisplayUpdate = true;
     server.send(200, "text/plain", "✅ Daily totals reset");
 }
