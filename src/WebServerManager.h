@@ -2,7 +2,7 @@
 #include <Arduino.h>
 #include <WebServer.h>
 #include "FoodManager.h"
-#include "ColorMap.h"
+#include "Color_Sensor.h"
 #include <sqlite3.h>
 
 // ✅ Define enum before the class so all scopes can see it
@@ -17,7 +17,7 @@ public:
     WiFiModeType getCurrentMode();
     IPAddress getDeviceIP();
 
-    void logSpectrumEntry(const String& foodName, float grams, const String& color, const Spectrum& spectrum);
+    void logSpectrumEntry(const String& foodName, float grams, const String& color, const spectralColor& spectrum);
     void logFoodEntry(const String& foodName, float grams, float cal, float prot, float carbs, float fat);
 
 private:

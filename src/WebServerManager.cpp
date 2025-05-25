@@ -2,7 +2,7 @@
 #include "DisplayManager.h"
 #include "WebSocketManager.h"
 #include "FoodManager.h"
-#include "ColorMap.h" 
+#include "Color_Sensor.h" 
 #include <SD.h>
 #include "Secrets.h"
 #include <sqlite3.h>

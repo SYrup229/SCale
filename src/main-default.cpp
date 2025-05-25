@@ -23,6 +23,7 @@ FoodItem currentFood;
 
 // Color sensor
 DFRobot_AS7341 colorSensor;
+spectralColor colorSpectrum;
 colorSensorState colorState = INACTIVE;
 
 String lastTimestamp = "";
@@ -59,6 +60,8 @@ void loop() {
 
   webServerManager.handle();
   webSocketManager.handle(weight, tareScale);
+
+  // if (captureSpectrum(colorSensor, colorSpectrum, colorState)) do something if true (returns color when done)
 
   if (!timeSynced && time(nullptr) > 24 * 3600) {
     Serial.println("✅ Time synchronized!");
