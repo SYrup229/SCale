@@ -23,7 +23,7 @@ FoodItem currentFood;
 
 // Color sensor
 DFRobot_AS7341 colorSensor;
-spectralColor colorSpectrum;
+spectralColors colorSpectrum;
 colorSensorState colorState = INACTIVE;
 
 String lastTimestamp = "";

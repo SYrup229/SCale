@@ -1,7 +1,31 @@
 #include "Color_Sensor.h"
+#include <algorithm>
 
-extern const spectralColor colorTable[];  // Color reference table from ColorMap.h
-extern const size_t colorCount;           // Number of colors in the reference table
+
+const spectralTable colorTable[] = {
+  { "Red",        {  2000,  4000,  6000,  8000, 12000, 25000, 65535, 50000, 0 } },
+  { "Dark Red",   {  1000,  2000,  3000,  4000,  8000, 20000, 65535, 45000, 0 } },
+  { "Orange",     {  2000,  4000,  8000, 12000, 30000, 65535, 48000, 10000, 0 } },
+  { "Brown",      {  3000,  5000,  8000, 10000, 25000, 45000, 30000,  8000, 0 } },
+  { "Yellow",     {  3000,  6000, 12000, 25000, 55000, 65535, 20000,  5000, 0 } },
+  { "Lime",       {  4000,  8000, 16000, 40000, 65535, 35000, 10000,  3000, 0 } },
+  { "Green",      {  3000,  5000, 10000, 25000, 65535, 30000,  5000,  2000, 0 } },
+  { "Dark Green", {  2000,  4000,  7000, 20000, 50000, 25000,  4000,  1500, 0 } },
+  { "Teal",       {  4000, 10000, 30000, 55000, 35000, 20000,  5000,  2000, 0 } },
+  { "Cyan",       {  5000, 15000, 45000, 60000, 30000, 12000,  5000,  2000, 0 } },
+  { "Blue",       { 10000, 65535, 40000,  8000,  4000,  2500,  1000,   800, 0 } },
+  { "Blueberry",  {  8000, 60000, 45000, 10000,  5000,  3000,  2000,  1500, 0 } },
+  { "Purple",     {  6000, 40000, 30000, 12000,  5000, 20000, 60000, 45000, 0 } },
+  { "Magenta",    {  4000, 30000, 20000,  8000,  5000, 15000, 65535, 50000, 0 } },
+  { "Pink",       {  3000, 12000,  8000,  4000,  8000, 20000, 50000, 30000, 0 } },
+  { "Grape",      {  5000, 35000, 25000, 10000,  4000, 15000, 60000, 52000, 0 } },
+  { "Olive",      {  2500,  4500,  7000, 22000, 48000, 30000, 10000,  2000, 0 } },
+  { "Tan",        {  4000,  7000, 10000, 18000, 28000, 38000, 30000,  8000, 0 } },
+  { "Turquoise",  {  6000, 18000, 50000, 60000, 35000, 15000,  4000,  1500, 0 } },
+};
+
+const size_t colorCount = sizeof(colorTable) / sizeof(colorTable[0]);
+
 
 /* ---------- PUBLIC API ---------- */
 bool initSpectralSensor(DFRobot_AS7341 &sensor,
@@ -23,7 +47,7 @@ bool initSpectralSensor(DFRobot_AS7341 &sensor,
 /*  Capture a full spectrum from the AS7341 sensor.
     Returns true when the capture is complete, false otherwise. 
     The state machine tracks the capture process.              */
-bool captureSpectrum(DFRobot_AS7341 &sensor, spectralColor &out, colorSensorState &state) {
+bool captureSpectrum(DFRobot_AS7341 &sensor, spectralColors &out, colorSensorState &state) {
 
   /* First SMUX group: F1-F4 + Clear*/
   if (state == INACTIVE) {
@@ -75,7 +99,7 @@ bool captureSpectrum(DFRobot_AS7341 &sensor, spectralColor &out, colorSensorStat
 /*  Normalize the spectrum against the Clear channel.
     This ensures that all F1-F8 values are relative to the Clear channel. 
     If Clear is zero, normalization is skipped to avoid division by zero.   */
-void normalizeSpectrum(spectralColor &spectrum) {
+void normalizeSpectrum(spectralColors &spectrum) {
   
   if (spectrum.f[8] == 0) {
     Serial.println("Error: Clear channel is zero, cannot normalize spectrum.");
@@ -92,23 +116,55 @@ void normalizeSpectrum(spectralColor &spectrum) {
 }
 
 // Map the normalized spectrum to the closest color in the color reference table.
-void colorMap(spectralColor &spectrum) {
+void colorMap(spectralColors &spectrum) {
 
-  uint32_t deltaTotal = 0;
-  uint32_t minDelta = UINT32_MAX;
-  uint8_t bestMatchIndex = 0;
+  uint8_t bestMatchIndex[3] = {0, 0, 0}; // Store indices of best matches
+  uint32_t bestMatchDelta[3] = {UINT32_MAX, UINT32_MAX, UINT32_MAX}; // Store delta values for best matches
 
-  for (int i = 0; i < colorCount; i++) {
+  for (size_t i = 0; i < colorCount; i++) {
 
-    for (int i = 0; i < 8; i++) deltaTotal += abs(int(spectrum.f[i]) - int(colorTable[i].f[i]));
+    uint32_t deltaTotal = 0;
 
-    if (deltaTotal < minDelta) {
-      minDelta = deltaTotal;
-      bestMatchIndex = i;
+    for (uint8_t f = 0; f < 8; f++) {
+      int32_t d = int32_t(spectrum.f[f]) - int32_t(colorTable[i].f[f]);
+      deltaTotal += uint32_t(d < 0 ? -d : d);
     }
 
-    deltaTotal = 0;  // Reset for next color
+    if (deltaTotal < bestMatchDelta[2]) {
+      bestMatchDelta[2] = deltaTotal;
+      bestMatchIndex[2] = i;
+
+      if (bestMatchDelta[2] < bestMatchDelta[1]) {
+        // Shift down the best matches
+        std::swap(bestMatchDelta[2], bestMatchDelta[1]);
+        std::swap(bestMatchIndex[2], bestMatchIndex[1]);
+
+        if (bestMatchDelta[1] < bestMatchDelta[0]) {
+        // Shift down the first match
+        std::swap(bestMatchDelta[1], bestMatchDelta[0]);
+        std::swap(bestMatchIndex[1], bestMatchIndex[0]);
+        }  
+      }
+    }
   }
 
-  spectrum.name = colorTable[bestMatchIndex].name;
+  spectrum.name[0] = colorTable[bestMatchIndex[0]].name;
+  spectrum.name[1] = colorTable[bestMatchIndex[1]].name;
+  spectrum.name[2] = colorTable[bestMatchIndex[2]].name;
+
+  float weights[3] = {0.0f, 0.0f, 0.0f};
+  weights[0] = 1.0f / (bestMatchDelta[0] + 1.0f);
+  weights[1] = 1.0f / (bestMatchDelta[1] + 1.0f);
+  weights[2] = 1.0f / (bestMatchDelta[2] + 1.0f);
+
+  float totalWeight = weights[0] + weights[1] + weights[2];
+
+  float percentages[3] = {0.0f, 0.0f, 0.0f};
+  percentages[0] = (weights[0] / totalWeight) * 100.0f;
+  percentages[1] = (weights[1] / totalWeight) * 100.0f;
+  percentages[2] = (weights[2] / totalWeight) * 100.0f;
+
+  spectrum.percent[0] = uint8_t(percentages[0] + 0.5f);
+  spectrum.percent[1] = uint8_t(percentages[1] + 0.5f);
+  spectrum.percent[2] = uint8_t(percentages[2] + 0.5f);
 }
