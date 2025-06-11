@@ -17,7 +17,7 @@ public:
     WiFiModeType getCurrentMode();
     IPAddress getDeviceIP();
 
-    void logSpectrumEntry(const String& foodName, float grams, const String& color, const spectralColor& spectrum);
+    void logSpectrumEntry(const String& foodName, float grams, const String& color, const spectralColors& spectrum);
     void logFoodEntry(const String& foodName, float grams, float cal, float prot, float carbs, float fat);
 
 private:

@@ -6,6 +6,7 @@
 #include <SD.h>
 #include "Secrets.h"
 #include <sqlite3.h>
+#include <WiFi.h>
 
 extern FoodManager foodManager;
 extern DailyNutrition dailyTotals;
@@ -16,6 +17,9 @@ extern float weight;
 extern DisplayManager displayManager;
 extern String lastTimestamp;
 extern String lastMode; // optional, if used in display
+extern DFRobot_AS7341 colorSensor; 
+extern spectralColors colorSpectrum; 
+extern colorSensorState colorState;
 
 
 
@@ -233,7 +237,7 @@ void WebServerManager::syncTime() {
     Serial.println("🔄 NTP time sync requested.");
 }
 
-void WebServerManager::logSpectrumEntry(const String& foodName, float weight, const String& color, const Spectrum& spectrum) {
+void WebServerManager::logSpectrumEntry(const String& foodName, float weight, const String& color, const spectralColors& spectrum) {
     const char* fileName = "/spectrum_log.csv";
 
     // Create CSV if needed
@@ -253,8 +257,8 @@ void WebServerManager::logSpectrumEntry(const String& foodName, float weight, co
         file.print(foodName); file.print(",");
         file.print(weight, 1); file.print(",");
         file.print(color);
-        for (int i = 0; i < 10; ++i) {
-            file.print(","); file.print(spectrum[i]);
+        for (int i = 0; i < 9; ++i) {
+            file.print(","); file.print(spectrum.f[i]);
         }
         file.println();
         file.close();
@@ -271,13 +275,25 @@ String FoodManager::getColorForFood(const String& foodName) {
 
 
 void WebServerManager::handleSelect() {
-    if (!server.hasArg("food") || !server.hasArg("color")) {
-        server.send(400, "text/plain", "Missing parameters");
+if (!server.hasArg("food")) {
+        server.send(400, "text/plain", "Missing 'food' parameter");
         return;
     }
 
     String foodName = server.arg("food");
-    String colorName = server.arg("color");
+
+    colorState = INACTIVE;
+
+    unsigned long start = millis();
+    while (!captureSpectrum(colorSensor, colorSpectrum, colorState) &&
+           millis() - start < 2000) {         // ≈1.5 s safety timeout
+        delay(20);                           // 50 Hz polling
+    }
+    if (millis() - start >= 2000) {
+        server.send(503, "text/plain", "Sensor timeout");
+        return;
+    }
+    String colorName = formatTopColors(colorSpectrum);
 
     if (weight <= 0) {
         server.send(400, "text/plain", "Invalid weight");
@@ -302,6 +318,15 @@ void WebServerManager::handleSelect() {
       float carbs      = sqlite3_column_double(stmt, 3);
       float fat        = sqlite3_column_double(stmt, 4);
       sqlite3_finalize(stmt);
+
+      const char* upsertColorSQL ="REPLACE INTO ColorMap (food_id, color_name) VALUES (?, ?);";
+     sqlite3_stmt* cstmt;
+     if (sqlite3_prepare_v2(db, upsertColorSQL, -1, &cstmt, nullptr) == SQLITE_OK) {
+         sqlite3_bind_int (cstmt, 1, food_id);
+         sqlite3_bind_text(cstmt, 2, colorName.c_str(), -1, SQLITE_TRANSIENT);
+         sqlite3_step(cstmt);                // ignore result code for brevity
+         sqlite3_finalize(cstmt);
+     }
 
       float factor = weight / 100.0;
       float cal = kcal * factor;
@@ -362,7 +387,9 @@ void WebServerManager::handleSelect() {
 
       displayManager.updateDisplay(weight, &currentFood, dailyTotals, timestamp, colorName);
 
-      server.send(200, "text/plain", "✅ Logged " + String(weight) + "g of " + foodName);
+            server.send(200, "text/plain",
+                  "✅ " + foodName +
+                  " ▸ " + String(weight, 0) + " g ▸ " + colorName);
       needDisplayUpdate = true;
     } else {
         sqlite3_finalize(stmt);
@@ -511,13 +538,10 @@ void WebServerManager::handleRoot() {
         return;
       }
       
-      let color = foodObj.color || prompt('What color is the food (e.g. red, green)?');
-      if (!color) return;
+      
 
       fetch(
-        `/select?food=${encodeURIComponent(foodObj.name)}` +
-        `&grams=${grams}` +
-        `&color=${encodeURIComponent(color.toLowerCase())}`)
+       `/select?food=${encodeURIComponent(foodObj.name)}&grams=${grams}`)
         .then(r => r.text())
         .then(t => {
           document.getElementById('status').innerText = t;

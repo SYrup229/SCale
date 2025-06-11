@@ -50,3 +50,5 @@ void normalizeSpectrum(spectralColors &spectrum);
 /*  Map the normalized spectrum to a color name.
     The best match is stored in ‘spectrum.name’.              */
 void colorMap(spectralColors &spectrum);
+
+String formatTopColors(const spectralColors& s);

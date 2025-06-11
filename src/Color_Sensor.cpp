@@ -1,5 +1,6 @@
 #include "Color_Sensor.h"
 #include <algorithm>
+#include <Arduino.h> 
 
 
 const spectralTable colorTable[] = {
@@ -26,6 +27,16 @@ const spectralTable colorTable[] = {
 
 const size_t colorCount = sizeof(colorTable) / sizeof(colorTable[0]);
 
+String formatTopColors(const spectralColors& s)
+{
+    char buf[96];
+    snprintf(buf, sizeof(buf), "%s (%u%%), %s (%u%%), %s (%u%%)",
+             s.name[0], s.percent[0],
+             s.name[1], s.percent[1],
+             s.name[2], s.percent[2]);
+    return String(buf);
+}
+
 
 /* ---------- PUBLIC API ---------- */
 bool initSpectralSensor(DFRobot_AS7341 &sensor,
@@ -41,6 +52,7 @@ bool initSpectralSensor(DFRobot_AS7341 &sensor,
   sensor.setAtime(atime);
   sensor.setAstep(astep);
   sensor.setWtime(wtime);
+  sensor.enableSpectralMeasure(true);
   return true;
 }
 
@@ -50,8 +62,7 @@ bool initSpectralSensor(DFRobot_AS7341 &sensor,
 bool captureSpectrum(DFRobot_AS7341 &sensor, spectralColors &out, colorSensorState &state) {
 
   /* First SMUX group: F1-F4 + Clear*/
-  if (state == INACTIVE) {
-
+  if (state == INACTIVE) {  
     sensor.startMeasure(DFRobot_AS7341::eF1F4ClearNIR);
     state = ACTIVE1;
     return false;
@@ -62,7 +73,6 @@ bool captureSpectrum(DFRobot_AS7341 &sensor, spectralColors &out, colorSensorSta
         auto g1 = sensor.readSpectralDataOne();
         out.f[0] = g1.ADF1;  out.f[1] = g1.ADF2;  out.f[2] = g1.ADF3;  out.f[3] = g1.ADF4;
         out.f[8] = g1.ADCLEAR;   // Clear (no-filter)
-
         sensor.startMeasure(DFRobot_AS7341::eF5F8ClearNIR);
         state = ACTIVE2;
     }

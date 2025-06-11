@@ -56,10 +56,14 @@ void FoodManager::begin(int sdCsPin) {
     );
 
     CREATE TABLE IF NOT EXISTS LogEntry (
-        log_id INTEGER PRIMARY KEY AUTOINCREMENT,
-        food_id INTEGER NOT NULL,
-        grams REAL NOT NULL,
-        timestamp TEXT NOT NULL,
+        log_id    INTEGER PRIMARY KEY AUTOINCREMENT,
+        food_id   INTEGER NOT NULL,
+        grams     REAL    NOT NULL,
+        timestamp TEXT    NOT NULL,
+        calories  REAL,
+        protein   REAL,
+        carbs     REAL,
+        fat       REAL,
         FOREIGN KEY (food_id) REFERENCES Food(food_id) ON DELETE CASCADE
     );
 
